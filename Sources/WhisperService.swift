@@ -1,7 +1,81 @@
 import Foundation
 
 class WhisperService {
+
     func transcribe(audioFileURL: URL) async throws -> String {
+        switch Config.transcriptionMode {
+        case .local:
+            return try await transcribeLocal(audioFileURL: audioFileURL)
+        case .cloud:
+            return try await transcribeCloud(audioFileURL: audioFileURL)
+        }
+    }
+
+    // MARK: - Local whisper.cpp Server
+
+    /// Sends audio to a local whisper.cpp server running the OpenAI-compatible API.
+    /// Start the server with: whisper-server -m /path/to/model.bin --host 127.0.0.1 --port 8080
+    private func transcribeLocal(audioFileURL: URL) async throws -> String {
+        let baseURL = Config.localWhisperBaseURL
+        guard let url = URL(string: "\(baseURL)/inference") else {
+            throw WhisperError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+
+        let boundary = UUID().uuidString
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        let audioData = try Data(contentsOf: audioFileURL)
+        var body = Data()
+
+        // temperature field (lower = more deterministic)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n".data(using: .utf8)!)
+        body.append("0.0\r\n".data(using: .utf8)!)
+
+        // response_format field
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8)!)
+        body.append("json\r\n".data(using: .utf8)!)
+
+        // audio file
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+        body.append(audioData)
+        body.append("\r\n".data(using: .utf8)!)
+
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw WhisperError.invalidResponse
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            let errorBody = String(data: data, encoding: .utf8).map { String($0.prefix(300)) } ?? "Unknown error"
+            throw WhisperError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
+        }
+
+        // whisper.cpp server returns {"text": "..."} by default
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        if let text = json?["text"] as? String {
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        // Fallback: decode as standard Whisper response
+        let result = try JSONDecoder().decode(WhisperResponse.self, from: data)
+        return result.text
+    }
+
+    // MARK: - Cloud (OpenAI Whisper API)
+
+    private func transcribeCloud(audioFileURL: URL) async throws -> String {
         guard let url = URL(string: "\(Config.openAIBaseURL)/audio/transcriptions") else {
             throw WhisperError.invalidURL
         }
@@ -29,9 +103,7 @@ class WhisperService {
         body.append(audioData)
         body.append("\r\n".data(using: .utf8)!)
 
-        // closing boundary
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-
         request.httpBody = body
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -49,6 +121,30 @@ class WhisperService {
         return result.text
     }
 
+    // MARK: - Health Check
+
+    /// Check if the local whisper.cpp server is reachable
+    static func isLocalServerRunning() async -> Bool {
+        let baseURL = Config.localWhisperBaseURL
+        guard let url = URL(string: baseURL) else { return false }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        request.httpMethod = "GET"
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                return http.statusCode == 200
+            }
+            return false
+        } catch {
+            return false
+        }
+    }
+
+    // MARK: - Types
+
     struct WhisperResponse: Decodable {
         let text: String
     }
@@ -57,6 +153,7 @@ class WhisperService {
         case invalidURL
         case invalidResponse
         case apiError(statusCode: Int, message: String)
+        case serverNotRunning
 
         var errorDescription: String? {
             switch self {
@@ -66,6 +163,8 @@ class WhisperService {
                 return "Invalid response from Whisper API"
             case .apiError(let code, let message):
                 return "Whisper API error (\(code)): \(message)"
+            case .serverNotRunning:
+                return "Local whisper.cpp server is not running. Start it with: whisper-server -m /path/to/model.bin"
             }
         }
     }

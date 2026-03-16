@@ -181,7 +181,14 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         statusLabel.autoresizingMask = [.width, .minYMargin]
         view.addSubview(statusLabel)
         self.apiKeyStatusLabel = statusLabel
-        y -= 36
+        y -= 22
+
+        let modeText = "Mode: \(Config.transcriptionMode.rawValue) transcription, \(Config.cleanupMode.rawValue) cleanup"
+        let modeLabel = makeLabel(modeText, size: 11, weight: .regular, color: mutedColor)
+        modeLabel.frame = NSRect(x: 20, y: y, width: width - 40, height: 16)
+        modeLabel.autoresizingMask = [.width, .minYMargin]
+        view.addSubview(modeLabel)
+        y -= 28
 
         let fieldLabel = makeLabel("Enter a new API key to update:", size: 13, weight: .regular, color: mutedColor)
         fieldLabel.frame = NSRect(x: 20, y: y, width: width - 40, height: 18)

@@ -7,13 +7,16 @@ class KeyMonitor {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var healthCheckTimer: Timer?
-    private var fnIsDown = false
+    private var isRecordingToggle = false
 
-    private static let fnKeyCode: UInt16 = 63
-    private static let fnFlagMask: UInt64 = 0x800000
+    // F5 key — reliable on all macOS versions including Tahoe (26)
+    private static let hotkeyCode: UInt16 = 96
 
     func start() -> Bool {
-        let eventMask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue)
+        // Listen for keyDown + keyUp (F5 is a regular key, not a modifier)
+        let eventMask: CGEventMask =
+            (1 << CGEventType.keyDown.rawValue) |
+            (1 << CGEventType.keyUp.rawValue)
 
         let selfPtr = Unmanaged.passRetained(self).toOpaque()
 
@@ -50,7 +53,7 @@ class KeyMonitor {
             }
         }
 
-        log("Key monitor started successfully")
+        log("Key monitor started successfully (hotkey: F5)")
         return true
     }
 
@@ -79,26 +82,30 @@ class KeyMonitor {
 
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
 
-        // Only handle fn key (keyCode 63)
-        guard keyCode == KeyMonitor.fnKeyCode else {
+        // Only handle our hotkey
+        guard keyCode == KeyMonitor.hotkeyCode else {
             return Unmanaged.passRetained(event)
         }
 
-        let flags = event.flags.rawValue
-        let fnPressed = (flags & KeyMonitor.fnFlagMask) != 0
+        // Toggle mode: tap F5 to start, tap again to stop
+        // Only act on keyDown, ignore keyUp and key repeats
+        if type == .keyDown {
+            let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            if isRepeat { return nil }
 
-        if fnPressed && !fnIsDown {
-            fnIsDown = true
-            DispatchQueue.main.async { [weak self] in
-                self?.onFnKeyDown?()
+            isRecordingToggle.toggle()
+            if isRecordingToggle {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onFnKeyDown?()
+                }
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onFnKeyUp?()
+                }
             }
-            return nil // Suppress the event
-        } else if !fnPressed && fnIsDown {
-            fnIsDown = false
-            DispatchQueue.main.async { [weak self] in
-                self?.onFnKeyUp?()
-            }
-            return nil // Suppress the event
+            return nil // Suppress the F5 keystroke
+        } else if type == .keyUp {
+            return nil // Suppress the F5 keystroke
         }
 
         return Unmanaged.passRetained(event)

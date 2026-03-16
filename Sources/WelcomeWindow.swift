@@ -699,6 +699,10 @@ class WelcomeWindow: NSObject, NSTextFieldDelegate {
 
         if currentStep < totalSteps - 1 {
             currentStep += 1
+            // Skip API key step in local mode (no key needed)
+            if currentStep == 4 && Config.transcriptionMode == .local && Config.cleanupMode != .cloud {
+                currentStep += 1
+            }
             buildStep()
         }
     }
@@ -706,6 +710,10 @@ class WelcomeWindow: NSObject, NSTextFieldDelegate {
     @objc private func prevStep() {
         if currentStep > 0 {
             currentStep -= 1
+            // Skip API key step in local mode
+            if currentStep == 4 && Config.transcriptionMode == .local && Config.cleanupMode != .cloud {
+                currentStep -= 1
+            }
             buildStep()
         }
     }

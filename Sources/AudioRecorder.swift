@@ -8,7 +8,7 @@ class AudioRecorder {
 
     func startRecording() throws -> URL {
         let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent("custom-wispr_\(UUID().uuidString).m4a")
+        let fileURL = tempDir.appendingPathComponent("custom-wispr_\(UUID().uuidString).wav")
         self.tempFileURL = fileURL
 
         let engine = AVAudioEngine()
@@ -24,10 +24,11 @@ class AudioRecorder {
         let audioFile = try AVAudioFile(
             forWriting: fileURL,
             settings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: recordingFormat.sampleRate,
                 AVNumberOfChannelsKey: recordingFormat.channelCount,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false
             ]
         )
 
@@ -67,7 +68,7 @@ class AudioRecorder {
             includingPropertiesForKeys: nil
         ) else { return }
 
-        for file in files where file.lastPathComponent.hasPrefix("custom-wispr_") && file.pathExtension == "m4a" {
+        for file in files where file.lastPathComponent.hasPrefix("custom-wispr_") && (file.pathExtension == "wav" || file.pathExtension == "m4a") {
             try? FileManager.default.removeItem(at: file)
         }
     }

@@ -5,6 +5,8 @@ class TextInjector {
     func inject(text: String) {
         let pasteboard = NSPasteboard.general
 
+        log("Injecting text: \(text.prefix(100))...")
+
         // Save current clipboard contents
         let savedItems = pasteboard.pasteboardItems?.compactMap { item -> (String, Data)? in
             guard let type = item.types.first,
@@ -16,14 +18,14 @@ class TextInjector {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        // Small delay to ensure clipboard is ready
-        usleep(50_000) // 50ms
+        // Delay to ensure clipboard is ready
+        usleep(100_000) // 100ms
 
         // Simulate Cmd+V
         simulatePaste()
 
-        // Restore clipboard after a delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+        // Restore clipboard after a longer delay to ensure paste completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             pasteboard.clearContents()
             for (typeRaw, data) in savedItems {
                 let type = NSPasteboard.PasteboardType(typeRaw)

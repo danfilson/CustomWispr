@@ -23,7 +23,7 @@ class AICleanupService {
     - Return ONLY the cleaned text, nothing else
     """
 
-    /// Patterns that indicate GPT refused to process the text instead of cleaning it
+    /// Patterns that indicate the LLM refused to process the text
     private let refusalPatterns = [
         "i'm sorry",
         "i can't assist",
@@ -48,23 +48,86 @@ class AICleanupService {
     }
 
     func cleanup(rawText: String) async -> String {
-        // Apply find/replace BEFORE GPT so Whisper misspellings (e.g. names) are
-        // corrected before GPT tries to interpret them
+        // Apply find/replace BEFORE LLM so Whisper misspellings are corrected first
         let replaced = SettingsManager.shared.applyReplacements(rawText)
-        do {
-            let cleaned = try await callGPT(rawText: replaced)
-            // If GPT refused to process the text (content policy triggered),
-            // fall back to the find/replace-only version instead of pasting a refusal
-            if isRefusal(cleaned) {
-                log("GPT returned a refusal instead of cleaned text. Falling back to replaced text.")
+
+        switch Config.cleanupMode {
+        case .off:
+            // No AI cleanup — just return find/replace result
+            log("Cleanup mode: off — using find/replace only")
+            return replaced
+
+        case .local:
+            do {
+                let cleaned = try await callOllama(rawText: replaced)
+                if isRefusal(cleaned) {
+                    log("Local LLM returned a refusal. Falling back to replaced text.")
+                    return replaced
+                }
+                return cleaned
+            } catch {
+                log("Local LLM cleanup failed: \(error.localizedDescription). Using replaced text.")
                 return replaced
             }
-            return cleaned
-        } catch {
-            log("GPT cleanup failed: \(error.localizedDescription). Using replaced text.")
-            return replaced
+
+        case .cloud:
+            do {
+                let cleaned = try await callGPT(rawText: replaced)
+                if isRefusal(cleaned) {
+                    log("GPT returned a refusal. Falling back to replaced text.")
+                    return replaced
+                }
+                return cleaned
+            } catch {
+                log("GPT cleanup failed: \(error.localizedDescription). Using replaced text.")
+                return replaced
+            }
         }
     }
+
+    // MARK: - Local (Ollama)
+
+    private func callOllama(rawText: String) async throws -> String {
+        let baseURL = Config.localOllamaBaseURL
+        guard let url = URL(string: "\(baseURL)/api/chat") else {
+            throw CleanupError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let payload: [String: Any] = [
+            "model": Config.localLLMModel,
+            "stream": false,
+            "options": ["temperature": 0.1],
+            "messages": [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": rawText]
+            ]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let errorBody = String(data: data, encoding: .utf8).map { String($0.prefix(200)) } ?? "Unknown error"
+            throw CleanupError.apiError(errorBody)
+        }
+
+        // Ollama response format: {"message": {"content": "..."}, ...}
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let message = json?["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw CleanupError.parseError
+        }
+
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Cloud (OpenAI GPT)
 
     private func callGPT(rawText: String) async throws -> String {
         guard let url = URL(string: "\(Config.openAIBaseURL)/chat/completions") else {
@@ -106,6 +169,28 @@ class AICleanupService {
         return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    // MARK: - Health Check
+
+    /// Check if the local Ollama server is reachable
+    static func isOllamaRunning() async -> Bool {
+        let baseURL = Config.localOllamaBaseURL
+        guard let url = URL(string: "\(baseURL)/api/tags") else { return false }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        request.httpMethod = "GET"
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                return http.statusCode == 200
+            }
+            return false
+        } catch {
+            return false
+        }
+    }
+
     enum CleanupError: LocalizedError {
         case invalidURL
         case apiError(String)
@@ -114,8 +199,8 @@ class AICleanupService {
         var errorDescription: String? {
             switch self {
             case .invalidURL: return "Invalid API URL"
-            case .apiError(let msg): return "GPT API error: \(msg)"
-            case .parseError: return "Failed to parse GPT response"
+            case .apiError(let msg): return "API error: \(msg)"
+            case .parseError: return "Failed to parse API response"
             }
         }
     }

@@ -39,8 +39,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.finishStartup()
             }
             welcomeWindow.show()
-        } else if !Config.hasAPIKey {
-            log("No API key found, showing welcome window")
+        } else if !Config.isConfigured {
+            log("Not configured, showing welcome window")
             welcomeWindow.onComplete = { [weak self] in
                 self?.finishStartup()
             }
@@ -159,11 +159,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startKeyMonitor() {
         keyMonitor.onFnKeyDown = { [weak self] in
-            log("fn key DOWN detected")
+            log("F5 key DOWN detected")
             self?.handleFnDown()
         }
         keyMonitor.onFnKeyUp = { [weak self] in
-            log("fn key UP detected")
+            log("F5 key UP detected")
             self?.handleFnUp()
         }
 
@@ -177,12 +177,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Recording Flow
 
     private func handleFnDown() {
-        guard Config.hasAPIKey else {
-            log("Ignoring fn down (no API key configured)")
+        guard Config.isConfigured else {
+            log("Ignoring F5 down (not configured)")
             return
         }
         guard !isRecording && !isProcessing else {
-            log("Ignoring fn down (recording=\(isRecording), processing=\(isProcessing))")
+            log("Ignoring F5 down (recording=\(isRecording), processing=\(isProcessing))")
             return
         }
         isRecording = true
