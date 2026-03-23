@@ -146,11 +146,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Permissions
 
     private func requestPermissions() {
-        // Log-only — permissions are now handled during onboarding in WelcomeWindow
         let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         log("Microphone status: \(micStatus.rawValue) (0=notDetermined, 1=restricted, 2=denied, 3=authorized)")
 
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): false] as CFDictionary
+        if micStatus == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                log("Microphone permission \(granted ? "granted" : "denied")")
+            }
+        } else if micStatus == .denied {
+            log("WARNING: Microphone denied. Please enable in System Settings > Privacy & Security > Microphone")
+        }
+
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
         log("Accessibility trusted: \(trusted)")
     }
@@ -159,11 +166,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startKeyMonitor() {
         keyMonitor.onFnKeyDown = { [weak self] in
-            log("F5 key DOWN detected")
+            log("F5 pressed — starting recording")
             self?.handleFnDown()
         }
         keyMonitor.onFnKeyUp = { [weak self] in
-            log("F5 key UP detected")
+            log("F5 pressed — stopping recording")
             self?.handleFnUp()
         }
 
@@ -216,6 +223,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let fileExists = FileManager.default.fileExists(atPath: audioURL.path)
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
+        log("Audio file: \(audioURL.path), exists: \(fileExists), size: \(fileSize) bytes")
+
         overlay.show(status: "Processing...")
         log("Recording stopped, processing...")
 
@@ -230,6 +241,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             do {
                 // Step 1: Transcribe
+                log("Starting transcription (mode: \(Config.transcriptionMode))...")
                 let rawText = try await whisper.transcribe(audioFileURL: audioURL)
                 #if DEBUG
                 log("Transcribed: \(rawText.prefix(100))...")
@@ -245,6 +257,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 #if DEBUG
                 log("Cleaned: \(cleanedText.prefix(100))...")
                 #endif
+
+                // Save to history (before paste, so it's retrievable even if paste fails)
+                HistoryManager.shared.addEntry(cleanedText: cleanedText, rawText: rawText)
 
                 // Step 3: Inject into active text field
                 DispatchQueue.main.async { [weak self] in

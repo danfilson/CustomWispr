@@ -13,7 +13,6 @@ class KeyMonitor {
     private static let hotkeyCode: UInt16 = 96
 
     func start() -> Bool {
-        // Listen for keyDown + keyUp (F5 is a regular key, not a modifier)
         let eventMask: CGEventMask =
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.keyUp.rawValue)
@@ -53,7 +52,7 @@ class KeyMonitor {
             }
         }
 
-        log("Key monitor started successfully (hotkey: F5)")
+        log("Key monitor started successfully (F5 trigger)")
         return true
     }
 
@@ -82,7 +81,7 @@ class KeyMonitor {
 
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
 
-        // Only handle our hotkey
+        // Only handle F5 key
         guard keyCode == KeyMonitor.hotkeyCode else {
             return Unmanaged.passRetained(event)
         }

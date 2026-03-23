@@ -2,8 +2,7 @@ import AVFoundation
 import Foundation
 
 class AudioRecorder {
-    private var audioEngine: AVAudioEngine?
-    private var audioFile: AVAudioFile?
+    private var recorder: AVAudioRecorder?
     private var tempFileURL: URL?
 
     func startRecording() throws -> URL {
@@ -11,45 +10,27 @@ class AudioRecorder {
         let fileURL = tempDir.appendingPathComponent("custom-wispr_\(UUID().uuidString).wav")
         self.tempFileURL = fileURL
 
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
+        // Record directly at 16kHz mono 16-bit PCM — whisper.cpp compatible
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16000.0,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false
+        ]
 
-        // Use outputFormat (not inputFormat) to avoid crashes on some hardware
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-
-        guard recordingFormat.sampleRate > 0 else {
+        let audioRecorder = try AVAudioRecorder(url: fileURL, settings: settings)
+        guard audioRecorder.record() else {
             throw RecorderError.noMicrophone
         }
 
-        let audioFile = try AVAudioFile(
-            forWriting: fileURL,
-            settings: [
-                AVFormatIDKey: kAudioFormatLinearPCM,
-                AVSampleRateKey: recordingFormat.sampleRate,
-                AVNumberOfChannelsKey: recordingFormat.channelCount,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsFloatKey: false
-            ]
-        )
-
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-            try? audioFile.write(from: buffer)
-        }
-
-        engine.prepare()
-        try engine.start()
-
-        self.audioEngine = engine
-        self.audioFile = audioFile
-
+        self.recorder = audioRecorder
         return fileURL
     }
 
     func stopRecording() -> URL? {
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
-        audioFile = nil
+        recorder?.stop()
+        recorder = nil
         return tempFileURL
     }
 

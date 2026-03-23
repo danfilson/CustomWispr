@@ -13,8 +13,13 @@ enum CleanupMode: String {
 
 enum Config {
     static let whisperModel = "whisper-1"
-    static let gptModel = "gpt-4o-mini"
-    static let openAIBaseURL = "https://api.openai.com/v1"
+    static var gptModel: String {
+        return readEnvValue("CLEANUP_MODEL") ?? "openai/gpt-4o-mini"
+    }
+
+    static var openAIBaseURL: String {
+        return readEnvValue("OPENAI_BASE_URL") ?? "https://api.openai.com/v1"
+    }
 
     // MARK: - Local Server Defaults
 

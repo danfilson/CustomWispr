@@ -94,7 +94,7 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         separator.autoresizingMask = [.width]
         tabBar.addSubview(separator)
 
-        let tabTitles = ["API Key", "Find & Replace", "Customize"]
+        let tabTitles = ["API Key", "Find & Replace", "Customize", "History"]
         let tabWidth = width / CGFloat(tabTitles.count)
 
         tabButtons = []
@@ -155,6 +155,7 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         case 0: container.addSubview(buildAPIKeyTab(width: width, height: height))
         case 1: container.addSubview(buildFindReplaceTab(width: width, height: height))
         case 2: container.addSubview(buildCustomizeTab(width: width, height: height))
+        case 3: container.addSubview(buildHistoryTab(width: width, height: height))
         default: break
         }
     }
@@ -557,6 +558,163 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
     @objc private func openBuyMeACoffee() {
         if let url = URL(string: "https://buymeacoffee.com/beausterling") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - Tab 4: History
+
+    private lazy var historyDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    private lazy var historyRelativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    private func buildHistoryTab(width: CGFloat, height: CGFloat) -> NSView {
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+
+        var y = height - 30
+
+        let titleLabel = makeLabel("Recording History", size: 18, weight: .bold, color: textColor)
+        titleLabel.frame = NSRect(x: 20, y: y, width: width - 40, height: 24)
+        titleLabel.autoresizingMask = [.width, .minYMargin]
+        view.addSubview(titleLabel)
+        y -= 26
+
+        let subtitleLabel = makeLabel("Browse and copy past transcriptions.", size: 12, weight: .regular, color: mutedColor)
+        subtitleLabel.frame = NSRect(x: 20, y: y, width: width - 40, height: 18)
+        subtitleLabel.autoresizingMask = [.width, .minYMargin]
+        view.addSubview(subtitleLabel)
+        y -= 28
+
+        let entries = HistoryManager.shared.entries
+
+        // Card container with scroll view
+        let cardFrame = NSRect(x: 20, y: 56, width: width - 40, height: y - 56)
+        let card = NSView(frame: cardFrame)
+        card.wantsLayer = true
+        card.layer?.backgroundColor = cardBgColor.cgColor
+        card.layer?.cornerRadius = 12
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = borderColor.cgColor
+        card.autoresizingMask = [.width, .height]
+
+        let scrollView = NSScrollView(frame: NSRect(x: 1, y: 1, width: cardFrame.width - 2, height: cardFrame.height - 2))
+        scrollView.autoresizingMask = [.width, .height]
+        scrollView.hasVerticalScroller = true
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+
+        if entries.isEmpty {
+            let emptyLabel = makeLabel("No transcriptions yet. Hold fn and speak to get started.", size: 13, weight: .regular, color: mutedColor)
+            emptyLabel.alignment = .center
+            emptyLabel.frame = NSRect(x: 20, y: cardFrame.height / 2 - 10, width: cardFrame.width - 40, height: 20)
+            emptyLabel.autoresizingMask = [.width, .minYMargin]
+            card.addSubview(emptyLabel)
+        } else {
+            let rowHeight: CGFloat = 60
+            let contentHeight = max(CGFloat(entries.count) * rowHeight, cardFrame.height - 2)
+            let documentView = NSView(frame: NSRect(x: 0, y: 0, width: cardFrame.width - 2, height: contentHeight))
+            documentView.autoresizingMask = [.width]
+
+            let now = Date()
+            for (i, entry) in entries.enumerated() {
+                let rowY = contentHeight - CGFloat(i + 1) * rowHeight
+                let row = NSView(frame: NSRect(x: 0, y: rowY, width: cardFrame.width - 2, height: rowHeight))
+                row.autoresizingMask = [.width]
+
+                // Timestamp
+                let age = now.timeIntervalSince(entry.timestamp)
+                let timeStr = age < 86400
+                    ? historyRelativeFormatter.localizedString(for: entry.timestamp, relativeTo: now)
+                    : historyDateFormatter.string(from: entry.timestamp)
+                let timeLabel = makeLabel(timeStr, size: 11, weight: .medium, color: mutedColor)
+                timeLabel.frame = NSRect(x: 12, y: rowHeight - 22, width: 200, height: 16)
+                row.addSubview(timeLabel)
+
+                // Text preview
+                let preview = entry.cleanedText.replacingOccurrences(of: "\n", with: " ")
+                let truncated = preview.count > 80 ? String(preview.prefix(80)) + "..." : preview
+                let textLabel = makeLabel(truncated, size: 13, weight: .regular, color: textColor)
+                textLabel.frame = NSRect(x: 12, y: 8, width: cardFrame.width - 90, height: 20)
+                textLabel.autoresizingMask = [.width]
+                textLabel.lineBreakMode = .byTruncatingTail
+                row.addSubview(textLabel)
+
+                // Copy button
+                let copyButton = makeSecondaryButton(title: "Copy", target: self, action: #selector(copyHistoryEntry(_:)))
+                copyButton.tag = i
+                copyButton.frame = NSRect(x: cardFrame.width - 72, y: 14, width: 54, height: 28)
+                copyButton.autoresizingMask = [.minXMargin]
+                copyButton.attributedTitle = NSAttributedString(
+                    string: "Copy",
+                    attributes: [
+                        .foregroundColor: textColor,
+                        .font: NSFont.systemFont(ofSize: 12, weight: .medium)
+                    ]
+                )
+                row.addSubview(copyButton)
+
+                // Row separator
+                if i < entries.count - 1 {
+                    let sep = NSView(frame: NSRect(x: 12, y: 0, width: cardFrame.width - 26, height: 1))
+                    sep.wantsLayer = true
+                    sep.layer?.backgroundColor = borderColor.cgColor
+                    sep.autoresizingMask = [.width]
+                    row.addSubview(sep)
+                }
+
+                documentView.addSubview(row)
+            }
+
+            scrollView.documentView = documentView
+        }
+
+        card.addSubview(scrollView)
+        view.addSubview(card)
+
+        // Bottom buttons
+        let refreshButton = makeSecondaryButton(title: "Refresh", target: self, action: #selector(refreshHistoryClicked))
+        refreshButton.frame = NSRect(x: 20, y: 14, width: 80, height: 32)
+        refreshButton.autoresizingMask = [.maxXMargin, .maxYMargin]
+        view.addSubview(refreshButton)
+
+        let clearButton = makeSecondaryButton(title: "Clear History", target: self, action: #selector(clearHistoryClicked))
+        clearButton.frame = NSRect(x: 110, y: 14, width: 110, height: 32)
+        clearButton.autoresizingMask = [.maxXMargin, .maxYMargin]
+        view.addSubview(clearButton)
+
+        return view
+    }
+
+    @objc private func copyHistoryEntry(_ sender: NSButton) {
+        let entries = HistoryManager.shared.entries
+        guard sender.tag >= 0, sender.tag < entries.count else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(entries[sender.tag].cleanedText, forType: .string)
+    }
+
+    @objc private func refreshHistoryClicked() {
+        HistoryManager.shared.reload()
+        showTab(3)
+    }
+
+    @objc private func clearHistoryClicked() {
+        let alert = NSAlert()
+        alert.messageText = "Clear History?"
+        alert.informativeText = "This will permanently delete all saved transcriptions."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            HistoryManager.shared.clearHistory()
+            showTab(3)
         }
     }
 
