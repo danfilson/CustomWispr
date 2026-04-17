@@ -18,10 +18,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsWindow = SettingsWindow()
     private let welcomeWindow = WelcomeWindow()
 
+    private var listenMenuItem: NSMenuItem!
     private var isRecording = false
     private var isProcessing = false
+    private var processingTask: Task<Void, Never>?
     private var maxRecordingTimer: Timer?
     private let maxRecordingDuration: TimeInterval = 300 // 5 minutes
+    private let maxProcessingDuration: UInt64 = 150_000_000_000 // 150 seconds in nanoseconds
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("App launched")
@@ -118,6 +121,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "CustomWispr", action: nil, keyEquivalent: ""))
+
+        listenMenuItem = NSMenuItem(title: "Start Listening", action: #selector(toggleListening), keyEquivalent: "")
+        listenMenuItem.target = self
+        menu.addItem(listenMenuItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
@@ -136,6 +144,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         settingsWindow.show()
+    }
+
+    @objc private func toggleListening() {
+        if isRecording {
+            keyMonitor.isRecordingToggle = false
+            handleFnUp()
+        } else if !isProcessing {
+            keyMonitor.isRecordingToggle = true
+            handleFnDown()
+        }
+    }
+
+    private func updateListenMenuItem() {
+        listenMenuItem?.title = isRecording ? "Stop Listening" : "Start Listening"
     }
 
     @objc private func quit() {
@@ -188,15 +210,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             log("Ignoring F5 down (not configured)")
             return
         }
-        guard !isRecording && !isProcessing else {
-            log("Ignoring F5 down (recording=\(isRecording), processing=\(isProcessing))")
+
+        // If processing is stuck, cancel it so user can start fresh
+        if isProcessing {
+            log("Cancelling stuck processing task")
+            processingTask?.cancel()
+            processingTask = nil
+            isProcessing = false
+            overlay.hide()
+            recorder.cleanup()
+        }
+
+        guard !isRecording else {
+            log("Ignoring F5 down (already recording)")
             return
         }
         isRecording = true
+        updateListenMenuItem()
+
+        overlay.show(status: "Listening...")
 
         do {
             _ = try recorder.startRecording()
-            overlay.show(status: "Listening...")
             log("Recording started")
 
             maxRecordingTimer = Timer.scheduledTimer(withTimeInterval: maxRecordingDuration, repeats: false) { [weak self] _ in
@@ -206,6 +241,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             log("ERROR: Failed to start recording: \(error.localizedDescription)")
             isRecording = false
+            updateListenMenuItem()
+            overlay.hide()
         }
     }
 
@@ -213,6 +250,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard isRecording else { return }
         isRecording = false
         isProcessing = true
+        updateListenMenuItem()
         maxRecordingTimer?.invalidate()
         maxRecordingTimer = nil
 
@@ -227,48 +265,80 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
         log("Audio file: \(audioURL.path), exists: \(fileExists), size: \(fileSize) bytes")
 
-        overlay.show(status: "Processing...")
+        overlay.show(status: "Transcribing...")
         log("Recording stopped, processing...")
 
-        Task {
+        processingTask = Task {
             defer {
                 DispatchQueue.main.async { [weak self] in
                     self?.isProcessing = false
+                    self?.processingTask = nil
                     self?.overlay.hide()
                     self?.recorder.cleanup()
+                    self?.updateListenMenuItem()
                 }
             }
 
             do {
-                // Step 1: Transcribe
-                log("Starting transcription (mode: \(Config.transcriptionMode))...")
-                let rawText = try await whisper.transcribe(audioFileURL: audioURL)
-                #if DEBUG
-                log("Transcribed: \(rawText.prefix(100))...")
-                #endif
+                // Overall timeout: race the pipeline against a deadline
+                try await withThrowingTaskGroup(of: String.self) { group in
+                    group.addTask { [self] in
+                        // Step 1: Transcribe
+                        log("Starting transcription (mode: \(Config.transcriptionMode))...")
+                        let rawText = try await whisper.transcribe(audioFileURL: audioURL)
+                        #if DEBUG
+                        log("Transcribed: \(rawText.prefix(100))...")
+                        #endif
 
-                guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    log("Empty transcription, skipping")
-                    return
+                        guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            log("Empty transcription, skipping")
+                            return ""
+                        }
+
+                        // Step 2: Clean up with AI
+                        await MainActor.run { overlay.show(status: "Cleaning up...") }
+                        let cleanedText = await cleanup.cleanup(rawText: rawText)
+                        #if DEBUG
+                        log("Cleaned: \(cleanedText.prefix(100))...")
+                        #endif
+
+                        // Save to history (before paste, so it's retrievable even if paste fails)
+                        HistoryManager.shared.addEntry(cleanedText: cleanedText, rawText: rawText)
+
+                        return cleanedText
+                    }
+
+                    // Timeout task
+                    group.addTask { [self] in
+                        try await Task.sleep(nanoseconds: maxProcessingDuration)
+                        throw ProcessingError.timeout
+                    }
+
+                    // Take whichever finishes first
+                    if let result = try await group.next() {
+                        group.cancelAll()
+                        if !result.isEmpty {
+                            await MainActor.run { [self] in
+                                // Copy to clipboard so Cmd+V works as fallback
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(result, forType: .string)
+                                injector.inject(text: result)
+                                log("Text injected and copied to clipboard")
+                            }
+                        }
+                    }
                 }
-
-                // Step 2: Clean up with AI
-                let cleanedText = await cleanup.cleanup(rawText: rawText)
-                #if DEBUG
-                log("Cleaned: \(cleanedText.prefix(100))...")
-                #endif
-
-                // Save to history (before paste, so it's retrievable even if paste fails)
-                HistoryManager.shared.addEntry(cleanedText: cleanedText, rawText: rawText)
-
-                // Step 3: Inject into active text field
-                DispatchQueue.main.async { [weak self] in
-                    self?.injector.inject(text: cleanedText)
-                    log("Text injected successfully")
-                }
+            } catch is CancellationError {
+                log("Processing was cancelled by user")
+            } catch ProcessingError.timeout {
+                log("ERROR: Processing timed out after \(maxProcessingDuration / 1_000_000_000)s")
             } catch {
                 log("ERROR: Processing failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    private enum ProcessingError: Error {
+        case timeout
     }
 }

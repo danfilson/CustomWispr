@@ -674,6 +674,13 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
             }
 
             scrollView.documentView = documentView
+
+            // Scroll to top (latest entries) after layout
+            DispatchQueue.main.async {
+                if let docView = scrollView.documentView {
+                    docView.scroll(NSPoint(x: 0, y: docView.frame.height))
+                }
+            }
         }
 
         card.addSubview(scrollView)
@@ -698,6 +705,19 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         guard sender.tag >= 0, sender.tag < entries.count else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(entries[sender.tag].cleanedText, forType: .string)
+
+        // Visual feedback: briefly change button title to "Copied!"
+        let originalTitle = sender.attributedTitle
+        sender.attributedTitle = NSAttributedString(
+            string: "Copied!",
+            attributes: [
+                .foregroundColor: NSColor.systemGreen,
+                .font: NSFont.systemFont(ofSize: 12, weight: .medium)
+            ]
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            sender.attributedTitle = originalTitle
+        }
     }
 
     @objc private func refreshHistoryClicked() {

@@ -33,6 +33,7 @@ swiftc \
     "${SOURCES_DIR}/TextInjector.swift" \
     "${SOURCES_DIR}/KeyMonitor.swift" \
     "${SOURCES_DIR}/SettingsManager.swift" \
+    "${SOURCES_DIR}/HistoryManager.swift" \
     "${SOURCES_DIR}/SettingsWindow.swift" \
     "${SOURCES_DIR}/WelcomeWindow.swift" \
     "${SOURCES_DIR}/UpdateChecker.swift" \
@@ -42,6 +43,9 @@ swiftc \
 echo "==> Copying resources..."
 cp "${RESOURCES_DIR}/Info.plist" "${APP_BUNDLE}/Contents/"
 cp "${RESOURCES_DIR}/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/"
+
+echo "==> Clearing Gatekeeper quarantine..."
+xattr -cr "${APP_BUNDLE}"
 
 echo "==> Code signing..."
 codesign --force --sign - \

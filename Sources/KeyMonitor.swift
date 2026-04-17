@@ -7,7 +7,7 @@ class KeyMonitor {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var healthCheckTimer: Timer?
-    private var isRecordingToggle = false
+    var isRecordingToggle = false
 
     // F5 key — reliable on all macOS versions including Tahoe (26)
     private static let hotkeyCode: UInt16 = 96
