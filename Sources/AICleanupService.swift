@@ -98,9 +98,16 @@ class AICleanupService {
         return (false, "")
     }
 
-    private func isRefusal(_ response: String) -> Bool {
-        let lower = response.lowercased()
-        return refusalPatterns.contains { lower.contains($0) }
+    /// Refusal detection. A real refusal (a) appears near the start of the response,
+    /// and (b) isn't an echo of words the user dictated themselves. The old detector
+    /// substring-matched the whole response, so legitimate transcriptions containing
+    /// "I'm sorry to do this last minute" tripped the refusal fallback.
+    private func isRefusal(_ response: String, input: String) -> Bool {
+        let head = String(response.prefix(120)).lowercased()
+        let lowerInput = input.lowercased()
+        return refusalPatterns.contains { pattern in
+            head.contains(pattern) && !lowerInput.contains(pattern)
+        }
     }
 
     /// URLSession with a hard cap on total request time
@@ -130,7 +137,7 @@ class AICleanupService {
         case .local:
             do {
                 let cleaned = try await callOllama(rawText: replaced)
-                if isRefusal(cleaned) {
+                if isRefusal(cleaned, input: replaced) {
                     log("Local LLM returned a refusal. Falling back to replaced text.")
                     return replaced
                 }
@@ -148,7 +155,7 @@ class AICleanupService {
         case .cloud:
             do {
                 let cleaned = try await callGPT(rawText: replaced)
-                if isRefusal(cleaned) {
+                if isRefusal(cleaned, input: replaced) {
                     log("GPT returned a refusal. Falling back to replaced text.")
                     return replaced
                 }

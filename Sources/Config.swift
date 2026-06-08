@@ -105,6 +105,12 @@ enum Config {
         return writeEnvFile(envValues)
     }
 
+    static func saveCleanupModel(_ model: String) -> Bool {
+        var envValues = readAllEnvValues()
+        envValues["CLEANUP_MODEL"] = model
+        return writeEnvFile(envValues)
+    }
+
     // MARK: - Env File Helpers
 
     private static func readKeyFromEnvFile() -> String? {

@@ -19,6 +19,25 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
     private var tabUnderlines: [NSView] = []
     private var contentContainer: NSView?
 
+    // Model picker
+    private var modelPopup: NSPopUpButton?
+    private var suggestButton: NSButton?
+    private struct CleanupOption {
+        let label: String
+        let mode: CleanupMode
+        let modelId: String?
+    }
+    private let cleanupOptions: [CleanupOption] = [
+        CleanupOption(label: "Off  ·  find/replace only",        mode: .off,   modelId: nil),
+        CleanupOption(label: "Claude Haiku 4.5  ·  Recommended", mode: .cloud, modelId: "anthropic/claude-haiku-4-5"),
+        CleanupOption(label: "Gemini 2.5 Flash Lite  ·  Fastest", mode: .cloud, modelId: "google/gemini-2.5-flash-lite"),
+        CleanupOption(label: "Gemini 2.0 Flash",                  mode: .cloud, modelId: "google/gemini-2.0-flash-001"),
+        CleanupOption(label: "GPT-4o",                            mode: .cloud, modelId: "openai/gpt-4o"),
+        CleanupOption(label: "GPT-4o mini",                       mode: .cloud, modelId: "openai/gpt-4o-mini"),
+        CleanupOption(label: "Claude Sonnet 4.6",                 mode: .cloud, modelId: "anthropic/claude-sonnet-4-6"),
+        CleanupOption(label: "Local  ·  Ollama (llama3.2:3b)",    mode: .local, modelId: nil),
+    ]
+
     // MARK: - Colors (matching customwispr-site)
 
     private let bgColor = NSColor(red: 0x0e/255.0, green: 0x0e/255.0, blue: 0x10/255.0, alpha: 1.0)
@@ -40,7 +59,7 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         apiKeyValue = ""
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -184,7 +203,7 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         self.apiKeyStatusLabel = statusLabel
         y -= 22
 
-        let modeText = "Mode: \(Config.transcriptionMode.rawValue) transcription, \(Config.cleanupMode.rawValue) cleanup"
+        let modeText = "Transcription: \(Config.transcriptionMode.rawValue)"
         let modeLabel = makeLabel(modeText, size: 11, weight: .regular, color: mutedColor)
         modeLabel.frame = NSRect(x: 20, y: y, width: width - 40, height: 16)
         modeLabel.autoresizingMask = [.width, .minYMargin]
@@ -226,7 +245,48 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         view.addSubview(saveButton)
         y -= 50
 
-        // Divider
+        // Divider (API key / model separator)
+        let apiDivider = NSView(frame: NSRect(x: 20, y: y + 14, width: width - 40, height: 1))
+        apiDivider.wantsLayer = true
+        apiDivider.layer?.backgroundColor = borderColor.cgColor
+        apiDivider.autoresizingMask = [.width, .minYMargin]
+        view.addSubview(apiDivider)
+        y -= 30
+
+        let modelSectionLabel = makeLabel("Cleanup", size: 13, weight: .regular, color: mutedColor)
+        modelSectionLabel.frame = NSRect(x: 20, y: y, width: width - 40, height: 18)
+        modelSectionLabel.autoresizingMask = [.width, .minYMargin]
+        view.addSubview(modelSectionLabel)
+        y -= 26
+
+        let popup = NSPopUpButton(frame: NSRect(x: 20, y: y, width: width - 140, height: 32))
+        popup.autoresizingMask = [.width, .minYMargin]
+        for option in cleanupOptions {
+            popup.addItem(withTitle: option.label)
+        }
+        let currentMode = Config.cleanupMode
+        let currentModel = Config.gptModel
+        var selectedIdx = 0
+        if let exactIdx = cleanupOptions.firstIndex(where: { opt in
+            if opt.mode != currentMode { return false }
+            if opt.mode == .off || opt.mode == .local { return true }
+            return opt.modelId == currentModel
+        }) {
+            selectedIdx = exactIdx
+        } else if let modelIdx = cleanupOptions.firstIndex(where: { $0.modelId == currentModel }) {
+            selectedIdx = modelIdx
+        }
+        popup.selectItem(at: selectedIdx)
+        view.addSubview(popup)
+        self.modelPopup = popup
+
+        let saveModelBtn = makeAmberButton(title: "Save", target: self, action: #selector(saveModelClicked))
+        saveModelBtn.frame = NSRect(x: width - 110, y: y, width: 90, height: 32)
+        saveModelBtn.autoresizingMask = [.minXMargin, .minYMargin]
+        view.addSubview(saveModelBtn)
+        y -= 50
+
+        // Divider (model / login separator)
         let divider = NSView(frame: NSRect(x: 20, y: y + 14, width: width - 40, height: 1))
         divider.wantsLayer = true
         divider.layer?.backgroundColor = borderColor.cgColor
@@ -263,6 +323,20 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
             apiKeyField?.stringValue = ""
             apiKeyStatusLabel?.stringValue = "Status: Configured"
             apiKeyStatusLabel?.textColor = greenColor
+        }
+    }
+
+    @objc private func saveModelClicked() {
+        guard let popup = modelPopup else { return }
+        let idx = popup.indexOfSelectedItem
+        guard idx >= 0, idx < cleanupOptions.count else { return }
+        let opt = cleanupOptions[idx]
+        _ = Config.saveMode(transcription: Config.transcriptionMode, cleanup: opt.mode)
+        if let modelId = opt.modelId {
+            _ = Config.saveCleanupModel(modelId)
+            log("Cleanup updated to: \(opt.mode.rawValue), model: \(modelId)")
+        } else {
+            log("Cleanup updated to: \(opt.mode.rawValue)")
         }
     }
 
@@ -419,6 +493,13 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         removeButton.frame = NSRect(x: 62, y: 14, width: 36, height: 32)
         removeButton.autoresizingMask = [.maxXMargin, .maxYMargin]
         view.addSubview(removeButton)
+
+        // Suggest from History button
+        let suggestButton = makeAmberButton(title: "Suggest from History", target: self, action: #selector(suggestFromHistoryClicked))
+        suggestButton.frame = NSRect(x: 106, y: 14, width: 180, height: 32)
+        suggestButton.autoresizingMask = [.maxXMargin, .maxYMargin]
+        view.addSubview(suggestButton)
+        self.suggestButton = suggestButton
 
         // Save button
         let saveButton = makeAmberButton(title: "Save", target: self, action: #selector(saveClicked))
@@ -783,6 +864,101 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         SettingsManager.shared.replacements = filtered.map { Replacement(find: $0.find, replace: $0.replace) }
         log("Settings saved (\(filtered.count) replacement\(filtered.count == 1 ? "" : "s"))")
         window?.close()
+    }
+
+    @objc private func suggestFromHistoryClicked() {
+        guard let btn = suggestButton else { return }
+        btn.isEnabled = false
+        btn.attributedTitle = NSAttributedString(
+            string: "Analyzing…",
+            attributes: [
+                .foregroundColor: NSColor.black,
+                .font: NSFont.systemFont(ofSize: 14, weight: .semibold)
+            ]
+        )
+        Task {
+            do {
+                let results = try await HistorySuggester.analyze()
+                await MainActor.run {
+                    if !results.high.isEmpty {
+                        let addedBefore = SettingsManager.shared.replacements.count
+                        for candidate in results.high {
+                            SettingsManager.shared.replacements.append(Replacement(find: candidate.find, replace: candidate.replace))
+                        }
+                        self.rows = SettingsManager.shared.replacements.map { ($0.find, $0.replace) }
+                        self.tableView?.reloadData()
+
+                        let lines = results.high.map { "\($0.find) → \($0.replace) (\($0.occurrences)x, \($0.evidence))" }.joined(separator: "\n")
+                        let alert = NSAlert()
+                        alert.messageText = "Auto-added \(results.high.count) high-confidence rules"
+                        alert.informativeText = lines
+                        alert.alertStyle = .informational
+                        alert.addButton(withTitle: "OK")
+                        alert.addButton(withTitle: "Undo all")
+                        let response = alert.runModal()
+                        if response == .alertSecondButtonReturn {
+                            let addedCount = results.high.count
+                            let currentCount = SettingsManager.shared.replacements.count
+                            if currentCount >= addedCount {
+                                SettingsManager.shared.replacements.removeSubrange((currentCount - addedCount)...)
+                            }
+                            self.rows = SettingsManager.shared.replacements.map { ($0.find, $0.replace) }
+                            self.tableView?.reloadData()
+                        }
+                        _ = addedBefore
+                    }
+
+                    for candidate in results.low {
+                        let alert = NSAlert()
+                        alert.messageText = "Low-confidence suggestion"
+                        alert.informativeText = "\(candidate.find) → \(candidate.replace)\n\(candidate.occurrences)x — \(candidate.evidence)"
+                        alert.alertStyle = .informational
+                        alert.addButton(withTitle: "Accept")
+                        alert.addButton(withTitle: "Reject")
+                        alert.addButton(withTitle: "Skip")
+                        let response = alert.runModal()
+                        if response == .alertFirstButtonReturn {
+                            SettingsManager.shared.replacements.append(Replacement(find: candidate.find, replace: candidate.replace))
+                            self.rows = SettingsManager.shared.replacements.map { ($0.find, $0.replace) }
+                            self.tableView?.reloadData()
+                        } else if response == .alertSecondButtonReturn {
+                            let rejectedURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".custom-wispr-suggestions-rejected.json")
+                            var existing: [[String: String]] = []
+                            if let data = try? Data(contentsOf: rejectedURL),
+                               let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] {
+                                existing = arr
+                            }
+                            existing.append(["find": candidate.find, "replace": candidate.replace])
+                            if let data = try? JSONSerialization.data(withJSONObject: existing, options: [.prettyPrinted]) {
+                                try? data.write(to: rejectedURL)
+                            }
+                        }
+                    }
+
+                    self.restoreSuggestButton()
+                }
+            } catch {
+                await MainActor.run {
+                    let alert = NSAlert()
+                    alert.messageText = "Analysis failed"
+                    alert.informativeText = error.localizedDescription
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                    self.restoreSuggestButton()
+                }
+            }
+        }
+    }
+
+    private func restoreSuggestButton() {
+        suggestButton?.isEnabled = true
+        suggestButton?.attributedTitle = NSAttributedString(
+            string: "Suggest from History",
+            attributes: [
+                .foregroundColor: NSColor.black,
+                .font: NSFont.systemFont(ofSize: 14, weight: .semibold)
+            ]
+        )
     }
 
     // MARK: - NSTableViewDataSource

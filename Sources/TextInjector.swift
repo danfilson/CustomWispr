@@ -35,19 +35,44 @@ class TextInjector {
     }
 
     private func simulatePaste() {
-        let source = CGEventSource(stateID: .hidSystemState)
+        // Try CGEvent first; fall back to AppleScript if it fails (broken on macOS 26 Tahoe)
+        if !simulatePasteCGEvent() {
+            log("CGEvent paste failed, falling back to AppleScript")
+            simulatePasteAppleScript()
+        }
+    }
 
-        // Key code 9 = 'v'
+    private func simulatePasteCGEvent() -> Bool {
+        guard AXIsProcessTrusted() else {
+            log("CGEvent paste skipped — Accessibility not trusted")
+            return false
+        }
+        let source = CGEventSource(stateID: .hidSystemState)
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(9), keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(9), keyDown: false) else {
-            NSLog("CustomWispr: Failed to create CGEvent for paste")
-            return
+            log("ERROR: Failed to create CGEvent for paste")
+            return false
         }
-
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
+        log("CGEvent Cmd+V posted")
+        return true
+    }
+
+    private func simulatePasteAppleScript() {
+        let src = """
+            tell application "System Events"
+                keystroke "v" using command down
+            end tell
+        """
+        var error: NSDictionary?
+        NSAppleScript(source: src)?.executeAndReturnError(&error)
+        if let err = error {
+            log("AppleScript paste error: \(err)")
+        } else {
+            log("AppleScript Cmd+V executed")
+        }
     }
 }

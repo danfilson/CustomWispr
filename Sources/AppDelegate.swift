@@ -27,6 +27,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let maxProcessingDuration: UInt64 = 150_000_000_000 // 150 seconds in nanoseconds
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Kill any existing instance so new builds always take over cleanly
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0.processIdentifier != myPID }
+        for app in others {
+            log("Terminating existing instance (PID \(app.processIdentifier))")
+            app.terminate()
+        }
+        if !others.isEmpty { Thread.sleep(forTimeInterval: 0.5) }
+
         log("App launched")
         AudioRecorder.cleanupStaleFiles()
 
