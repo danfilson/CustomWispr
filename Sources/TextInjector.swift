@@ -43,9 +43,8 @@ class TextInjector {
     }
 
     private func simulatePasteCGEvent() -> Bool {
-        guard AXIsProcessTrusted() else {
-            log("CGEvent paste skipped — Accessibility not trusted")
-            return false
+        if !AXIsProcessTrusted() {
+            log("WARNING: AXIsProcessTrusted() returned false — attempting CGEvent paste anyway")
         }
         let source = CGEventSource(stateID: .hidSystemState)
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(9), keyDown: true),

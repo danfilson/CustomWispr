@@ -12,7 +12,9 @@ class AudioRecorder {
 
     func startRecording() throws -> URL {
         let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent("custom-wispr_\(UUID().uuidString).m4a")
+        let useWAV = Config.transcriptionMode == .local
+        let ext = useWAV ? "wav" : "m4a"
+        let fileURL = tempDir.appendingPathComponent("custom-wispr_\(UUID().uuidString).\(ext)")
         self.tempFileURL = fileURL
         self.framesWritten = 0
 
@@ -42,16 +44,23 @@ class AudioRecorder {
             throw RecorderError.noMicrophone
         }
 
-        let audioFile = try AVAudioFile(
-            forWriting: fileURL,
-            settings: [
+        let fileSettings: [String: Any] = useWAV
+            ? [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: 16000.0,
+                AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false
+            ]
+            : [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: recordingFormat.sampleRate,
                 AVNumberOfChannelsKey: min(recordingFormat.channelCount, 2),
                 AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
                 AVEncoderBitRateKey: 32000
             ]
-        )
+
+        let audioFile = try AVAudioFile(forWriting: fileURL, settings: fileSettings)
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
             do {
