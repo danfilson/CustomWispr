@@ -873,10 +873,26 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
                 let preview = entry.cleanedText.replacingOccurrences(of: "\n", with: " ")
                 let truncated = preview.count > 80 ? String(preview.prefix(80)) + "..." : preview
                 let textLabel = makeLabel(truncated, size: 13, weight: .regular, color: textColor)
-                textLabel.frame = NSRect(x: 12, y: 8, width: cardFrame.width - 90, height: 20)
+                textLabel.frame = NSRect(x: 12, y: 8, width: cardFrame.width - 150, height: 20)
                 textLabel.autoresizingMask = [.width]
                 textLabel.lineBreakMode = .byTruncatingTail
                 row.addSubview(textLabel)
+
+                // Copy Raw button (only when a raw transcript was saved for this entry)
+                if let raw = entry.rawText, !raw.isEmpty {
+                    let copyRawButton = makeSecondaryButton(title: "Raw", target: self, action: #selector(copyRawHistoryEntry(_:)))
+                    copyRawButton.tag = i
+                    copyRawButton.frame = NSRect(x: cardFrame.width - 132, y: 14, width: 54, height: 28)
+                    copyRawButton.autoresizingMask = [.minXMargin]
+                    copyRawButton.attributedTitle = NSAttributedString(
+                        string: "Raw",
+                        attributes: [
+                            .foregroundColor: mutedColor,
+                            .font: NSFont.systemFont(ofSize: 12, weight: .medium)
+                        ]
+                    )
+                    row.addSubview(copyRawButton)
+                }
 
                 // Copy button
                 let copyButton = makeSecondaryButton(title: "Copy", target: self, action: #selector(copyHistoryEntry(_:)))
@@ -936,6 +952,26 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         guard sender.tag >= 0, sender.tag < entries.count else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(entries[sender.tag].cleanedText, forType: .string)
+
+        // Visual feedback: briefly change button title to "Copied!"
+        let originalTitle = sender.attributedTitle
+        sender.attributedTitle = NSAttributedString(
+            string: "Copied!",
+            attributes: [
+                .foregroundColor: NSColor.systemGreen,
+                .font: NSFont.systemFont(ofSize: 12, weight: .medium)
+            ]
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            sender.attributedTitle = originalTitle
+        }
+    }
+
+    @objc private func copyRawHistoryEntry(_ sender: NSButton) {
+        let entries = HistoryManager.shared.entries
+        guard sender.tag >= 0, sender.tag < entries.count, let raw = entries[sender.tag].rawText else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(raw, forType: .string)
 
         // Visual feedback: briefly change button title to "Copied!"
         let originalTitle = sender.attributedTitle
