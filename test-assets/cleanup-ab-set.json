@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "created": "2026-07-07",
+  "purpose": "Fixed synthetic test set for monthly cleanup-model A/B comparison. Mimics Daniel's dictation style (rambling cadence, self-corrections, fillers, domain vocabulary). NEVER edit existing passages — month-over-month comparability depends on the set staying frozen. Add new passages with new ids if needed.",
+  "scoring": {
+    "content_preservation": "Every non-filler word in the input must appear in the output in order. Fillers = um, uh, er, ah, hmm ONLY. Words like 'like', 'you know', 'so', 'basically' must be KEPT.",
+    "filler_removal": "Pure filler sounds should be removed.",
+    "no_paraphrase": "Word substitutions, reordering, or summarization = failure.",
+    "also_measure": ["latency_ms", "cost_usd_estimated_from_tokens"]
+  },
+  "passages": [
+    {
+      "id": 1,
+      "text": "um okay so I want to talk about the quarterly accessibility audit for the Biddeford website and uh basically the remediation backlog still has like forty seven documents waiting"
+    },
+    {
+      "id": 2,
+      "text": "can you look at the VeraPDF gates and er make sure they're calibrated against the Mac PAC checker before we ship anything to the client because last time uh the tagging phase fell behind"
+    },
+    {
+      "id": 3,
+      "text": "so the Dirigo Interactive outreach campaign um the regional partnership emails go out on Thursday and I want to make sure that you know the brand voice is right it feels maybe a little bit off"
+    },
+    {
+      "id": 4,
+      "text": "please set me a reminder to um cancel my LinkedIn subscription in three weeks time and also uh put the invoice follow up on my calendar for Monday morning"
+    },
+    {
+      "id": 5,
+      "text": "I don't know I feel like we should er we should probably go in parallel and do it and I want you to maximize token cost efficiency so making sure the right model for the right subagent et cetera"
+    },
+    {
+      "id": 6,
+      "text": "look at both inboxes and both sent items over the last two to three weeks to see if there's any emails that I need to reply to or um any follow ups that I need to do"
+    },
+    {
+      "id": 7,
+      "text": "okay quick question um is it best practice that we send to multiple people in that org or should it just be one or two if those orgs have all of these roles within it what should we do there"
+    },
+    {
+      "id": 8,
+      "text": "so maybe just to clarify something here our pipeline I believe uh the VeraPDF also should use Mac PAC which is our custom built checker and our gates should all be calibrated"
+    },
+    {
+      "id": 9,
+      "text": "yeah I do want to do when we're ready I do want us to hmm to update the municipalities page and the accessibility statement page on the WordPress site with the new Gutenberg blocks"
+    },
+    {
+      "id": 10,
+      "text": "um can you analyze the meeting notes from the Portland PDF training session and ah pull out the action items especially anything about ADA Title Two compliance deadlines for April"
+    },
+    {
+      "id": 11,
+      "text": "I'm wondering if er if any of the actual whisper service is losing anything like I just recorded that and maybe in text it just looks a lot shorter than it does when I say it"
+    },
+    {
+      "id": 12,
+      "text": "so for the resume pipeline um the fit analyst should run before the writer obviously and uh I want the positioning brief to emphasize the product management experience not the uh not the agency work"
+    },
+    {
+      "id": 13,
+      "text": "add a task to follow up with the Bubble Wrap contractor about the um the document hub migration and check whether the ARQ worker needs restarting after the deploy"
+    },
+    {
+      "id": 14,
+      "text": "the thing is um I always feel like even though I'm rambling and going off there are things that come back that are missing so basically I just want a sanity check on the transcription quality"
+    },
+    {
+      "id": 15,
+      "text": "okay last one uh please draft a reply to Susana about the thirty minute meeting on the fourth and mention that er even error prone auto closed caption transcription is more accessible than nothing"
+    }
+  ]
+}
