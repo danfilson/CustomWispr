@@ -22,6 +22,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var isRecording = false
     private var isProcessing = false
     private var processingTask: Task<Void, Never>?
+    private var cleanupWarningToken: UUID?
+    private let cleanupWarningDuration: TimeInterval = 3
     private var maxRecordingTimer: Timer?
     private let maxRecordingDuration: TimeInterval = 300 // 5 minutes
     private let maxProcessingDuration: UInt64 = 150_000_000_000 // 150 seconds in nanoseconds
@@ -382,11 +384,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // On failure, keep the recording so the dictation isn't lost — it's the only
             // copy of what was said. Stale files are swept at next app launch.
             var keepAudioAfterFailure = false
+            // Set when cleanup fell back to raw text; the overlay reports it instead of
+            // hiding, so a broken cleanup path can't stay invisible the way a dead API
+            // key once did for weeks.
+            var cleanupWarning: String?
             defer {
+                let warning = cleanupWarning
                 DispatchQueue.main.async { [weak self] in
                     self?.isProcessing = false
                     self?.processingTask = nil
-                    self?.overlay.hide()
+                    if let warning {
+                        self?.showCleanupWarning(warning)
+                    } else {
+                        self?.overlay.hide()
+                    }
                     if keepAudioAfterFailure {
                         log("Processing failed — chunk audio kept in temp dir for recovery (custom-wispr_*)")
                     } else {
@@ -398,23 +409,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             do {
                 // Overall timeout: race the pipeline against a deadline
-                try await withThrowingTaskGroup(of: String.self) { group in
+                try await withThrowingTaskGroup(of: AICleanupService.CleanupResult.self) { group in
                     group.addTask { [self] in
                         let rawText = try await chain?.value ?? ""
 
                         guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             log("Empty transcription, skipping")
-                            return ""
+                            return AICleanupService.CleanupResult(text: "", fallbackReason: nil)
                         }
 
                         // Clean up with AI
                         await MainActor.run { overlay.show(status: "Cleaning up...") }
-                        let cleanedText = await cleanup.cleanup(rawText: rawText)
+                        let result = await cleanup.cleanup(rawText: rawText)
 
                         // Save to history (before paste, so it's retrievable even if paste fails)
-                        HistoryManager.shared.addEntry(cleanedText: cleanedText, rawText: rawText)
+                        HistoryManager.shared.addEntry(cleanedText: result.text, rawText: rawText)
 
-                        return cleanedText
+                        return result
                     }
 
                     // Timeout task
@@ -426,12 +437,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     // Take whichever finishes first
                     if let result = try await group.next() {
                         group.cancelAll()
-                        if !result.isEmpty {
+                        cleanupWarning = result.fallbackReason
+                        if !result.text.isEmpty {
                             await MainActor.run { [self] in
                                 // Copy to clipboard so Cmd+V works as fallback
                                 NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(result, forType: .string)
-                                injector.inject(text: result)
+                                NSPasteboard.general.setString(result.text, forType: .string)
+                                injector.inject(text: result.text)
                                 log("Text injected and copied to clipboard")
                             }
                         }
@@ -448,6 +460,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 keepAudioAfterFailure = true
                 log("ERROR: Processing failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// Reports why the pasted text is raw, then clears itself. The text has already been
+    /// injected by this point, so this is a notice and never blocks. A dictation started
+    /// before the timer fires owns the overlay — the token stops a stale timer from
+    /// hiding the new "Listening..." out from under it.
+    private func showCleanupWarning(_ reason: String) {
+        let token = UUID()
+        cleanupWarningToken = token
+        overlay.show(status: "⚠ \(reason)")
+        log("Cleanup fell back to raw text: \(reason)")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + cleanupWarningDuration) { [weak self] in
+            guard let self, self.cleanupWarningToken == token,
+                  !self.isRecording, !self.isProcessing else { return }
+            self.overlay.hide()
         }
     }
 
