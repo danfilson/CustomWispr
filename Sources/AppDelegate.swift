@@ -26,6 +26,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let maxRecordingDuration: TimeInterval = 300 // 5 minutes
     private let maxProcessingDuration: UInt64 = 150_000_000_000 // 150 seconds in nanoseconds
 
+    // Streaming transcription: chunks arrive (possibly out of order, all on main)
+    // as the recorder rotates files mid-dictation; each is transcribed immediately
+    // in a serial chain so only the short final chunk remains after key-up.
+    private var pendingChunks: [Int: URL] = [:]
+    private var nextChunkIndex = 0
+    private var expectedTotalChunks: Int?
+    private var chunkChain: [Task<String, Error>] = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Kill any existing instance so new builds always take over cleanly
         let myPID = ProcessInfo.processInfo.processIdentifier
@@ -67,10 +75,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         requestPermissions()
         startKeyMonitor()
 
-        // Check for updates after a short delay so the app feels snappy
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            UpdateChecker.checkForUpdates()
+        // Flip the overlay to "Listening..." only when audio is actually flowing —
+        // the honest cue for when it's safe to start talking.
+        recorder.onFirstBuffer = { [weak self] in
+            guard let self = self, self.isRecording else { return }
+            self.overlay.show(status: "Listening...")
         }
+        recorder.onChunkReady = { [weak self] url, index in
+            self?.chunkArrived(url: url, index: index)
+        }
+        recorder.prewarm()
+
+        // No automatic update check: this fork lags upstream version numbers by
+        // design, so the modal was a permanent nag. The monthly health-check
+        // routine reviews upstream releases and assesses them instead.
     }
 
     // MARK: - Menu Bar
@@ -226,6 +244,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             log("Cancelling stuck processing task")
             processingTask?.cancel()
             processingTask = nil
+            chunkChain.forEach { $0.cancel() }
             isProcessing = false
             overlay.hide()
             recorder.cleanup()
@@ -238,7 +257,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isRecording = true
         updateListenMenuItem()
 
-        overlay.show(status: "Listening...")
+        // Reset streaming-transcription state for this dictation
+        pendingChunks = [:]
+        nextChunkIndex = 0
+        expectedTotalChunks = nil
+        chunkChain = []
+
+        // onFirstBuffer upgrades this to "Listening..." once audio is flowing
+        overlay.show(status: "Starting...")
 
         do {
             _ = try recorder.startRecording()
@@ -264,27 +290,108 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         maxRecordingTimer?.invalidate()
         maxRecordingTimer = nil
 
-        guard let audioURL = recorder.stopRecording() else {
-            log("ERROR: No audio file after stopping recording")
+        let result = recorder.stopRecording()
+
+        guard result.totalChunks > 0, result.totalFrames > 0 else {
+            log("No audio captured, nothing to transcribe")
             isProcessing = false
             overlay.hide()
+            recorder.cleanup()
+            updateListenMenuItem()
             return
         }
 
-        let fileExists = FileManager.default.fileExists(atPath: audioURL.path)
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
-        log("Audio file: \(audioURL.path), exists: \(fileExists), size: \(fileSize) bytes")
-
         overlay.show(status: "Transcribing...")
-        log("Recording stopped, processing...")
+        log("Recording stopped, finishing \(result.totalChunks) chunk(s) (mode: \(Config.transcriptionMode))...")
+
+        if let url = result.finalChunk {
+            chunkArrived(url: url, index: result.finalChunkIndex)
+        }
+        expectedTotalChunks = result.totalChunks
+        maybeFinishDictation()
+    }
+
+    // MARK: - Streaming Transcription
+
+    /// Chunks arrive on the main queue but rotation callbacks are dispatched async,
+    /// so the final chunk can land before a just-rotated one — buffer by index and
+    /// enqueue strictly in order.
+    private func chunkArrived(url: URL, index: Int) {
+        pendingChunks[index] = url
+        while let next = pendingChunks[nextChunkIndex] {
+            pendingChunks.removeValue(forKey: nextChunkIndex)
+            enqueueChunk(url: next, index: nextChunkIndex)
+            nextChunkIndex += 1
+        }
+        maybeFinishDictation()
+    }
+
+    /// Each chunk transcribes in a serial chain: it awaits the accumulated text of
+    /// all previous chunks and passes its tail as the whisper prompt, so chunk
+    /// boundaries keep vocabulary and sentence flow. Mid-dictation chunks start
+    /// transcribing while the user is still talking.
+    private func enqueueChunk(url: URL, index: Int) {
+        let previous = chunkChain.last
+        let whisper = self.whisper
+        let task = Task<String, Error> {
+            let prior = try await previous?.value ?? ""
+            try Task.checkCancellation()
+            let prompt = prior.isEmpty ? nil : String(prior.suffix(400))
+            let text = try await whisper.transcribe(audioFileURL: url, prompt: prompt)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            log("Chunk \(index) transcribed (\(trimmed.count) chars)")
+            if trimmed.isEmpty { return prior }
+            return prior.isEmpty ? trimmed : AppDelegate.joinDedupingOverlap(prior, trimmed)
+        }
+        chunkChain.append(task)
+    }
+
+    /// A chunk cut can land inside a word, making whisper emit it at both the end
+    /// of one chunk and the start of the next ("...to the client. client. Marker...").
+    /// Drop the longest run of words duplicated across the seam before joining.
+    static func joinDedupingOverlap(_ prior: String, _ next: String, maxOverlapWords: Int = 6) -> String {
+        func key(_ word: Substring) -> String {
+            word.lowercased().filter { $0.isLetter || $0.isNumber }
+        }
+        let priorWords = prior.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+        let nextWords = next.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+        let limit = min(maxOverlapWords, priorWords.count, nextWords.count)
+        for n in stride(from: limit, through: 1, by: -1) {
+            let tail = priorWords.suffix(n).map(key)
+            let head = nextWords.prefix(n).map(key)
+            if tail == head, !tail.contains("") {
+                let remainder = nextWords.dropFirst(n).joined(separator: " ")
+                return remainder.isEmpty ? prior : prior + " " + remainder
+            }
+        }
+        return prior + " " + next
+    }
+
+    /// Runs once recording has stopped AND every chunk has been enqueued: awaits
+    /// the tail of the chain (usually just the short final chunk at this point),
+    /// then cleans up and injects.
+    private func maybeFinishDictation() {
+        guard isProcessing, processingTask == nil,
+              let total = expectedTotalChunks, nextChunkIndex >= total else { return }
+        expectedTotalChunks = nil
+
+        let chain = chunkChain.last
+        let allChunkTasks = chunkChain
 
         processingTask = Task {
+            // On failure, keep the recording so the dictation isn't lost — it's the only
+            // copy of what was said. Stale files are swept at next app launch.
+            var keepAudioAfterFailure = false
             defer {
                 DispatchQueue.main.async { [weak self] in
                     self?.isProcessing = false
                     self?.processingTask = nil
                     self?.overlay.hide()
-                    self?.recorder.cleanup()
+                    if keepAudioAfterFailure {
+                        log("Processing failed — chunk audio kept in temp dir for recovery (custom-wispr_*)")
+                    } else {
+                        self?.recorder.cleanup()
+                    }
                     self?.updateListenMenuItem()
                 }
             }
@@ -293,24 +400,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // Overall timeout: race the pipeline against a deadline
                 try await withThrowingTaskGroup(of: String.self) { group in
                     group.addTask { [self] in
-                        // Step 1: Transcribe
-                        log("Starting transcription (mode: \(Config.transcriptionMode))...")
-                        let rawText = try await whisper.transcribe(audioFileURL: audioURL)
-                        #if DEBUG
-                        log("Transcribed: \(rawText.prefix(100))...")
-                        #endif
+                        let rawText = try await chain?.value ?? ""
 
                         guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             log("Empty transcription, skipping")
                             return ""
                         }
 
-                        // Step 2: Clean up with AI
+                        // Clean up with AI
                         await MainActor.run { overlay.show(status: "Cleaning up...") }
                         let cleanedText = await cleanup.cleanup(rawText: rawText)
-                        #if DEBUG
-                        log("Cleaned: \(cleanedText.prefix(100))...")
-                        #endif
 
                         // Save to history (before paste, so it's retrievable even if paste fails)
                         HistoryManager.shared.addEntry(cleanedText: cleanedText, rawText: rawText)
@@ -340,9 +439,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             } catch is CancellationError {
                 log("Processing was cancelled by user")
+                allChunkTasks.forEach { $0.cancel() }
             } catch ProcessingError.timeout {
+                keepAudioAfterFailure = true
+                allChunkTasks.forEach { $0.cancel() }
                 log("ERROR: Processing timed out after \(maxProcessingDuration / 1_000_000_000)s")
             } catch {
+                keepAudioAfterFailure = true
                 log("ERROR: Processing failed: \(error.localizedDescription)")
             }
         }
