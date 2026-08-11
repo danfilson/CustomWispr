@@ -58,8 +58,14 @@ for what the routine does; edit here, not in the scheduled-task prompt.
   - It holds a 10-minute run-lock. If it refuses, the sweep already ran — read the output rather than passing `--force`. The 2026-08 run billed for three sweeps instead of two because a re-import silently re-executed the whole thing.
   - Add candidate models with `--models`; if one is worth keeping, add it to the Settings catalog rather than to the harness.
 - Add newly cheap notable OpenRouter models to the candidate list each run.
-- Table + recommendation. Only recommend switching if a model beats the current one on cost with ≥ equal preservation (preservation is the priority). **State the margin and the set size** — on 25 passages a sub-0.5pp preservation gap is not a result, and latency or cost should carry the decision instead.
-- Scoring set is at **v3** (2026-08-11). v2: `umm` counts as filler and dropping an adjacent verbatim repeat is not a paraphrase failure. v3: a `spelling_fixed %` axis for the American-English rule, scored separately from preservation — spelling is normalized on both sides before comparison so a model that obeys the rule is never scored as substituting a word. **Paraphrase-failure counts do not compare across the v1/v2 boundary** and `spelling_fixed` is new in v3; preservation and filler-removal compare throughout. Never edit an existing passage — add new ones with new ids.
+- Table + recommendation. Only recommend switching if a model beats the current one on cost with ≥ equal preservation (preservation is the priority). **State the margin and the set size** — on 27 passages a sub-0.5pp preservation gap is not a result, and latency or cost should carry the decision instead.
+- Scoring set is at **v4** (all three bumps 2026-08-11; only v4 has produced a recorded result).
+  - **v2** — `umm` counts as filler; dropping an adjacent verbatim repeat is not a paraphrase failure.
+  - **v3** — `spelling_fixed %` axis for the American-English rule, scored separately from preservation, with spelling normalized on both sides so obeying the rule is never scored as a word substitution.
+  - **v4** — spoken numerals (`v three` → `v3`, `two point two double A` → `2.2 AA`) and compound proper nouns (`weed maps` → `Weedmaps`) are folded before comparison. These produced 3 false failures out of 27 on the first live run.
+  - **Comparability:** paraphrase-failure counts do not compare across the v1/v2 or v3/v4 boundaries. Preservation and filler-removal compare throughout; `spelling_fixed` starts at v3.
+  - Never edit an existing passage — add new ones with new ids.
+- **The recurring failure mode in this benchmark is a constant offset.** Three times now a scoring rule has penalised every model identically — false starts (v2), obeyed spelling normalization (v3), spoken numerals (v4). A metric that fails the whole field tells you nothing and hides real regressions behind noise that never varies. When every model fails the same passage, suspect the rule before the models.
 - **Report `spelling_fixed` per model.** The models handle this rule inconsistently — before it was added to the prompt, cleanup left `colour` untouched 9/9 times and normalized `-ise` verbs only 5 of 14. A model that scores well on preservation but poorly here is not a good default.
 
 ### 6. Speech-pattern observations (coaching, not judgment)

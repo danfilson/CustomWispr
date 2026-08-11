@@ -162,12 +162,72 @@ def americanize(seq: list) -> list:
     return [BRITISH.get(t, t) for t in seq]
 
 
+NUMBER_WORDS = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+    "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
+    "fifteen": "15", "sixteen": "16", "seventeen": "17", "eighteen": "18",
+    "nineteen": "19", "twenty": "20", "thirty": "30", "forty": "40", "fifty": "50",
+}
+
+
+def normalize_spoken(seq: list) -> list:
+    """Fold the transcription conventions every model applies, so they stop being
+    scored as word substitutions.
+
+    Dictation says "large v three turbo" and "WCAG two point two double A"; every
+    model writes "v3" and "2.2 AA". Counting that as content loss puts a constant
+    offset in the preservation column for every model at once, which is exactly
+    what the passage-12 false-start rule used to do -- it hides real regressions
+    behind noise that never varies.
+    """
+    out = [NUMBER_WORDS.get(t, t) for t in seq]
+    res = []
+    i = 0
+    while i < len(out):
+        # "double A" -> "aa", "triple X" -> "xxx" (spoken letter convention)
+        if out[i] in ("double", "triple") and i + 1 < len(out) and len(out[i + 1]) == 1:
+            res.append(out[i + 1] * (2 if out[i] == "double" else 3))
+            i += 2
+            continue
+        # "two point two" -> "2" "2": drop the decimal connector between digits
+        if (out[i] == "point" and res and res[-1].isdigit()
+                and i + 1 < len(out) and out[i + 1].isdigit()):
+            i += 1
+            continue
+        res.append(out[i])
+        i += 1
+    return res
+
+
+def merge_compounds(ref: list, got: list, max_span: int = 3) -> list:
+    """Let a single output token stand for consecutive input tokens it concatenates.
+
+    "weed maps" -> "Weedmaps" is the model writing a proper noun correctly, not
+    dropping a word.
+    """
+    joined = set(got)
+    out = []
+    i = 0
+    while i < len(ref):
+        for span in range(min(max_span, len(ref) - i), 1, -1):
+            if "".join(ref[i:i + span]) in joined:
+                out.append("".join(ref[i:i + span]))
+                i += span
+                break
+        else:
+            out.append(ref[i])
+            i += 1
+    return out
+
+
 def score(raw: str, cleaned: str) -> dict:
     src, out = tokens(raw), tokens(cleaned)
     # Normalize spelling on BOTH sides before comparing, so a model that obeys the
     # American-spelling rule isn't scored as having substituted a word.
-    ref = collapse(americanize([t for t in src if t not in FILLERS]))
-    got = collapse(americanize([t for t in out if t not in FILLERS]))
+    ref = collapse(normalize_spoken(americanize([t for t in src if t not in FILLERS])))
+    got = collapse(normalize_spoken(americanize([t for t in out if t not in FILLERS])))
+    ref = merge_compounds(ref, got)
     preservation = lcs_len(ref, got) / len(ref) if ref else 1.0
     in_fill = sum(1 for t in src if t in FILLERS)
     out_fill = sum(1 for t in out if t in FILLERS)
@@ -205,7 +265,7 @@ def clean_once(model: str, prompt: str, passage: str, key: str) -> tuple:
     return text, latency, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
 
 
-def sweep(models, passages, prompt, key, price, reps, budget):
+def sweep(models, passages, prompt, key, price, reps, budget, verbose=False):
     spent, rows = 0.0, []
     for model in models:
         pin, pout = price.get(model, (0.0, 0.0))
@@ -226,6 +286,9 @@ def sweep(models, passages, prompt, key, price, reps, budget):
                 spent += cost
                 agg["cost"] += cost
                 s = score(p["text"], text)
+                if verbose and s["preservation"] < 1.0:
+                    print(f"    passage {p['id']:>2} {s['preservation'] * 100:6.2f}%\n"
+                          f"      in : {p['text']}\n      out: {text}")
                 agg["preservation"].append(s["preservation"])
                 agg["latency"].append(ms)
                 agg["fails"] += int(s["paraphrase_fail"])
@@ -260,6 +323,8 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--json-out", help="write full results here")
     ap.add_argument("--force", action="store_true", help="ignore the run-lock")
+    ap.add_argument("--verbose", action="store_true",
+                    help="print the input and output of every passage scoring below 100%%")
     a = ap.parse_args(argv)
 
     data = json.loads(AB_SET.read_text())
@@ -289,7 +354,7 @@ def main(argv=None) -> int:
     if unknown:
         print(f"!! not in the OpenRouter catalog, will 404: {', '.join(unknown)}", file=sys.stderr)
 
-    rows, spent = sweep(models, passages, prompt, key, price, a.reps, a.budget)
+    rows, spent = sweep(models, passages, prompt, key, price, a.reps, a.budget, a.verbose)
     rows.sort(key=lambda r: (-r["preservation"], r["latency_ms"]))
 
     print(f"\n{'model':42s} {'preserv':>8s} {'filler':>7s} {'spell':>7s} {'fails':>6s} "
