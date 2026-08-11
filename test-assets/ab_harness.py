@@ -37,6 +37,34 @@ RUN_LOCK = Path("/tmp/customwispr-ab-harness.lock")
 FILLERS = {"um", "umm", "uh", "er", "ah", "hmm"}
 API = "https://openrouter.ai/api/v1"
 
+# ggml-large-v3-turbo is the multilingual model and emits British forms, more so with
+# Daniel's accent: across 503 history entries `colour` survived into cleaned output 9/9
+# times and -ise verbs were normalized only 5 of 14. The cleanup prompt now asks for
+# American spelling, so the scorer must (a) not count an obeyed normalization as a word
+# substitution, and (b) measure whether it happened at all.
+BRITISH = {
+    "colour": "color", "colours": "colors", "coloured": "colored",
+    "favourite": "favorite", "behaviour": "behavior", "behaviours": "behaviors",
+    "honour": "honor", "labour": "labor", "neighbour": "neighbor",
+    "centre": "center", "centres": "centers", "metre": "meter", "theatre": "theater",
+    "licence": "license", "defence": "defense", "offence": "offense",
+    "grey": "gray", "programme": "program", "programmes": "programs",
+    "catalogue": "catalog", "dialogue": "dialog",
+    "analyse": "analyze", "analysed": "analyzed", "analysing": "analyzing",
+    "organise": "organize", "organised": "organized", "organising": "organizing",
+    "organisation": "organization", "realise": "realize", "realised": "realized",
+    "recognise": "recognize", "recognised": "recognized",
+    "summarise": "summarize", "summarised": "summarized",
+    "optimise": "optimize", "optimised": "optimized",
+    "maximise": "maximize", "minimise": "minimize",
+    "apologise": "apologize", "apologising": "apologizing",
+    "prioritise": "prioritize", "prioritised": "prioritized",
+    "customise": "customize", "emphasise": "emphasize", "specialise": "specialize",
+    "travelled": "traveled", "cancelled": "canceled", "modelling": "modeling",
+    "labelled": "labeled", "fulfil": "fulfill", "enrol": "enroll",
+    "practise": "practice", "sceptical": "skeptical",
+}
+
 
 # ---------------------------------------------------------------- extraction
 
@@ -130,10 +158,16 @@ def lcs_len(a: list, b: list) -> int:
     return prev[-1]
 
 
+def americanize(seq: list) -> list:
+    return [BRITISH.get(t, t) for t in seq]
+
+
 def score(raw: str, cleaned: str) -> dict:
     src, out = tokens(raw), tokens(cleaned)
-    ref = collapse([t for t in src if t not in FILLERS])
-    got = collapse([t for t in out if t not in FILLERS])
+    # Normalize spelling on BOTH sides before comparing, so a model that obeys the
+    # American-spelling rule isn't scored as having substituted a word.
+    ref = collapse(americanize([t for t in src if t not in FILLERS]))
+    got = collapse(americanize([t for t in out if t not in FILLERS]))
     preservation = lcs_len(ref, got) / len(ref) if ref else 1.0
     in_fill = sum(1 for t in src if t in FILLERS)
     out_fill = sum(1 for t in out if t in FILLERS)
@@ -142,6 +176,8 @@ def score(raw: str, cleaned: str) -> dict:
         "fillers_in": in_fill,
         "fillers_left": out_fill,
         "paraphrase_fail": preservation < 1.0,
+        "british_in": sum(1 for t in src if t in BRITISH),
+        "british_left": sum(1 for t in out if t in BRITISH),
     }
 
 
@@ -174,7 +210,7 @@ def sweep(models, passages, prompt, key, price, reps, budget):
     for model in models:
         pin, pout = price.get(model, (0.0, 0.0))
         agg = {"preservation": [], "latency": [], "fails": 0, "fill_in": 0,
-               "fill_left": 0, "errors": 0, "cost": 0.0}
+               "fill_left": 0, "brit_in": 0, "brit_left": 0, "errors": 0, "cost": 0.0}
         for _ in range(reps):
             for p in passages:
                 if spent >= budget:
@@ -195,11 +231,14 @@ def sweep(models, passages, prompt, key, price, reps, budget):
                 agg["fails"] += int(s["paraphrase_fail"])
                 agg["fill_in"] += s["fillers_in"]
                 agg["fill_left"] += s["fillers_left"]
+                agg["brit_in"] += s["british_in"]
+                agg["brit_left"] += s["british_left"]
         n = len(agg["preservation"]) or 1
         rows.append({
             "model": model,
             "preservation": 100 * sum(agg["preservation"]) / n,
             "filler_removal": 100 * (1 - agg["fill_left"] / agg["fill_in"]) if agg["fill_in"] else 100.0,
+            "spelling_fixed": 100 * (1 - agg["brit_left"] / agg["brit_in"]) if agg["brit_in"] else None,
             "paraphrase_fails": agg["fails"] / max(reps, 1),
             "latency_ms": sum(agg["latency"]) / n,
             "errors": agg["errors"],
@@ -207,8 +246,9 @@ def sweep(models, passages, prompt, key, price, reps, budget):
             "spend": agg["cost"],
         })
         r = rows[-1]
+        sp = "  n/a" if r["spelling_fixed"] is None else f"{r['spelling_fixed']:5.1f}%"
         print(f"  {model:42s} {r['preservation']:6.2f}%  fill {r['filler_removal']:5.1f}%  "
-              f"{r['latency_ms']:7.0f}ms  ${r['cost_per_1k']:.3f}/1k  err {r['errors']}")
+              f"spell {sp}  {r['latency_ms']:7.0f}ms  ${r['cost_per_1k']:.3f}/1k  err {r['errors']}")
     return rows, spent
 
 
@@ -252,9 +292,11 @@ def main(argv=None) -> int:
     rows, spent = sweep(models, passages, prompt, key, price, a.reps, a.budget)
     rows.sort(key=lambda r: (-r["preservation"], r["latency_ms"]))
 
-    print(f"\n{'model':42s} {'preserv':>8s} {'filler':>7s} {'fails':>6s} {'latency':>9s} {'$/1k':>8s}")
+    print(f"\n{'model':42s} {'preserv':>8s} {'filler':>7s} {'spell':>7s} {'fails':>6s} "
+          f"{'latency':>9s} {'$/1k':>8s}")
     for r in rows:
-        print(f"{r['model']:42s} {r['preservation']:7.2f}% {r['filler_removal']:6.1f}% "
+        sp = "    n/a" if r["spelling_fixed"] is None else f"{r['spelling_fixed']:6.1f}%"
+        print(f"{r['model']:42s} {r['preservation']:7.2f}% {r['filler_removal']:6.1f}% {sp} "
               f"{r['paraphrase_fails']:6.1f} {r['latency_ms']:8.0f}ms {r['cost_per_1k']:8.3f}")
     print(f"\nsweep spend: ${spent:.4f} of ${a.budget:.2f} ceiling")
 

@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "created": "2026-07-07",
   "purpose": "Fixed synthetic test set for monthly cleanup-model A/B comparison. Mimics Daniel's dictation style (rambling cadence, self-corrections, fillers, domain vocabulary). NEVER edit existing passages — month-over-month comparability depends on the set staying frozen. Add new passages with new ids if needed.",
   "scoring": {
@@ -9,7 +9,8 @@
     "also_measure": [
       "latency_ms",
       "cost_usd_estimated_from_tokens"
-    ]
+    ],
+    "american_spelling": "The cleanup prompt requires American English. British forms in the input (colour, organise, analyse, licence, grey, programme) should appear Americanized in the output. Measured as spelling_fixed %; scored separately from preservation, which normalizes spelling on both sides so an obeyed normalization is never counted as a word substitution. Evidence for the rule: across 503 history entries `colour` survived into cleaned output 9/9 times and -ise verbs were normalized only 5 of 14."
   },
   "passages": [
     {
@@ -111,6 +112,14 @@
     {
       "id": 25,
       "text": "um okay so the PDF accessibility remediation for the Bubble Wrap deck uh needs alt text on every informative image and basically the reading order fixed"
+    },
+    {
+      "id": 26,
+      "text": "um so the colour palette for the Dirigo site needs to work in dark mode and uh basically I want to organise the tokens by role not by hue"
+    },
+    {
+      "id": 27,
+      "text": "right so I analysed the audit results and um we should prioritise the colour contrast failures because uh that's the biggest chunk of the backlog"
     }
   ],
   "changelog": [
@@ -123,6 +132,11 @@
       "version": 2,
       "date": "2026-08-11",
       "note": "Scoring updated: 'umm' added to the filler list, and adjacent verbatim repetition is no longer counted as a paraphrase failure — this mirrors the AICleanupService prompt change of the same date. All seven models in the 2026-08 A/B failed passage 12 identically under the v1 rule, which put a constant +1 in every paraphrase-failure column and cost that metric its ability to discriminate. Passages 16-25 added (real fork vocabulary; the 15-passage set could not resolve the 0.44pp margin between the top two models). NO existing passage was edited. Paraphrase-failure counts are NOT comparable across the v1/v2 boundary; preservation and filler-removal percentages are."
+    },
+    {
+      "version": 3,
+      "date": "2026-08-11",
+      "note": "Scoring gains a spelling axis: the cleanup prompt now requires American English, so British forms are normalized on BOTH sides before the preservation comparison (a model obeying the rule must not score as having substituted a word) and a separate spelling_fixed % measures whether it obeyed. Passages 26-27 added with British forms Whisper actually produced in history. NO existing passage was edited. Preservation is comparable across the v2/v3 boundary; spelling_fixed is new."
     }
   ]
 }

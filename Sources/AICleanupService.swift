@@ -31,6 +31,10 @@ class AICleanupService {
     - Preserve meaning, tone, and intent exactly as spoken
     - Preserve technical terms, proper nouns, and jargon
     - Do NOT rewrite or paraphrase — treat every word as intentional
+    - Use American English spelling: color not colour, organize not organise, analyze not \
+    analyse, license not licence, gray not grey, program not programme. This is spelling \
+    normalization of the same word, not word substitution — it is the one exception to the \
+    preserve-exact-words rules above, and it does not license any other change
     - Do NOT add commentary, notes, or responses
     - Return ONLY the cleaned text, nothing else
     """
