@@ -16,11 +16,16 @@ class AICleanupService {
     Return ONLY the cleaned text content, without the XML tags.
 
     Cleanup rules:
-    - Only remove pure filler sounds: uh, um, er, ah, hmm
+    - Only remove pure filler sounds: uh, um, umm, er, ah, hmm
     - KEEP words like "like", "right", "so", "well", "basically", "actually" — these are part of natural speech and often carry meaning
     - Fix punctuation and capitalization only
     - Preserve the speaker's exact words — do NOT remove, add, or substitute words
-    - Do NOT remove false starts, self-corrections, or repeated words — keep them verbatim
+    - Do NOT remove false starts or self-corrections where the speaker changed what they were \
+    saying — keep those verbatim (e.g. "send it Tuesday, no, Wednesday" stays as spoken)
+    - You MAY drop an immediately repeated word or phrase when the repetition is verbatim and \
+    adjacent, or separated only by a filler — e.g. "not the uh not the agency work" becomes \
+    "not the agency work"
+    - Never reorder, substitute, or rewrite words to smooth over a repetition
     - Do NOT "fix" sentence structure, word order, or phrasing — only punctuation and capitalization
     - Do NOT fix grammar by removing or reordering words — only add commas/periods/capitals
     - Preserve meaning, tone, and intent exactly as spoken

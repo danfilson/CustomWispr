@@ -37,8 +37,8 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
     private let cleanupOptions: [CleanupOption] = [
         CleanupOption(label: "Off  ·  find/replace only",        mode: .off,   modelId: nil),
         CleanupOption(label: "Claude Haiku 4.5  ·  Recommended", mode: .cloud, modelId: "anthropic/claude-haiku-4-5"),
-        CleanupOption(label: "Gemini 2.5 Flash Lite  ·  Fastest", mode: .cloud, modelId: "google/gemini-2.5-flash-lite"),
-        CleanupOption(label: "Gemini 2.0 Flash",                  mode: .cloud, modelId: "google/gemini-2.0-flash-001"),
+        CleanupOption(label: "Gemini 3.1 Flash Lite  ·  Fastest", mode: .cloud, modelId: "google/gemini-3.1-flash-lite"),
+        CleanupOption(label: "Gemini 2.5 Flash Lite",             mode: .cloud, modelId: "google/gemini-2.5-flash-lite"),
         CleanupOption(label: "GPT-4o",                            mode: .cloud, modelId: "openai/gpt-4o"),
         CleanupOption(label: "GPT-4o mini",                       mode: .cloud, modelId: "openai/gpt-4o-mini"),
         CleanupOption(label: "Claude Sonnet 4.6",                 mode: .cloud, modelId: "anthropic/claude-sonnet-4-6"),

@@ -68,6 +68,8 @@ class HistorySuggester {
         decoder.dateDecodingStrategy = .iso8601
         guard let entries = try? decoder.decode([HistoryEntry].self, from: data) else { return [] }
 
+        // Deliberately independent of HistoryManager.maxEntries (2000): this bound exists to
+        // cap what gets sent to the cleanup LLM, not to mirror how much history is retained.
         return entries.prefix(500).compactMap { entry in
             guard let raw = entry.rawText, !raw.isEmpty, entry.cleanedText != raw else { return nil }
             return (raw: raw, cleaned: entry.cleanedText)

@@ -12,7 +12,13 @@ class HistoryManager {
 
     private let filePath = NSString("~/.custom-wispr-history.json").expandingTildeInPath
     private let queue = DispatchQueue(label: "com.customwispr.history")
-    private let maxEntries = 500
+    /// Raised from 500 on 2026-08-11. The monthly health check reads this file as its only
+    /// longitudinal data source, and at ~320 dictations/month a 500-entry cap held barely six
+    /// weeks — month-over-month comparisons were losing their tail faster than they were
+    /// gaining a head. 2000 entries is roughly six months and ~2.4 MB.
+    /// Note: `HistorySuggester` deliberately samples only the newest 500 of these; that bound
+    /// is about LLM input cost, not about how much history is worth keeping.
+    private let maxEntries = 2000
 
     private var _entries: [HistoryEntry] = []
 
