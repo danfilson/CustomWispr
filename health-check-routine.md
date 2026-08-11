@@ -29,7 +29,7 @@ for what the routine does; edit here, not in the scheduled-task prompt.
 - Speed regression test: transcribe a ~10s generated clip (`say` → `afconvert` to 16kHz mono WAV → POST /inference); flag if it takes > 4s (baseline ~2s).
 - App: CustomWispr running, signed by `CustomWispr Dev` (`codesign -dvv`).
 - Orphaned `custom-wispr_*` files in the app's temp dir = failed dictations since last launch — count and flag.
-- Disk: models dir size, history file size (500-entry cap means it self-limits).
+- Disk: models dir size, history file size (2000-entry cap means it self-limits — raised from 500 on 2026-08-11 so the file holds ~6 months rather than ~6 weeks).
 
 ### 2. Upstream release review
 - `curl -s https://api.github.com/repos/beausterling/CustomWispr/releases` — releases newer than `last_seen_tag` in the state file.
@@ -40,17 +40,26 @@ for what the routine does; edit here, not in the scheduled-task prompt.
 - Load history entries from the last month. Compute: dictation count, total words, avg words/dictation, empty-transcription count.
 - Scan raw texts for: recurring misrecognitions (same wrong word ≥2 times → propose a find/replace rule, checking it isn't already in `~/.custom-wispr-settings.json` replacements); garbled runs (candidate chunk-boundary artifacts — note timestamps); sentences that end mid-thought (trailing-off signal).
 - Propose find/replace additions in the report — do NOT edit the settings file.
+- **Silent-cleanup canary (report this every run, even when it is 0%).** For every entry ≥30 chars, check whether `cleanedText` is byte-identical to `rawText` **and** the raw text has a defect a working cleanup must fix (starts lowercase, or ends with no terminal punctuation). Identical *with* an unfixed defect proves the LLM never touched that dictation. Report the rate for the current month and the previous one.
+  - Healthy is **0%** — that is the observed value in every known-working window.
+  - **>5% ⇒ 🔴 action needed**, cleanup is silently failing. A dead API key produced a 7-week outage (late May → 2026-07-14, ~300 dictations, ~30k words) that went unnoticed because nothing surfaced it. This single check is what would have caught it in week one; the overlay reporting added in `d814d4d` only covers failures the app itself sees.
 
 ### 4. Cleanup spend
 - `GET https://openrouter.ai/api/v1/auth/key` with the OpenRouter key → usage figures.
+- **Key expiry — escalate, don't just note it.** Read `expires_at` from that response and report days remaining.
+  - **< 60 days ⇒ 🔴 action needed** and it leads the Actions table. A dead key is the single highest-consequence failure this app has (see the canary in §3); an expiry date is the one form of it that is knowable in advance, so it must never be reported as a passive observation. Current key expires **2026-10-12**.
+  - Also `GET /api/v1/credits` for the account balance — flag under $5, since an exhausted balance fails identically to a dead key.
 - Cross-estimate: last month's history volume × current cleanup model pricing (input ≈ raw chars/4 tokens + ~350-token system prompt per call; output ≈ cleaned chars/4).
 - Report monthly spend and $/dictation.
 
 ### 5. Cleanup model A/B (synthetic set only)
-- Load `test-assets/cleanup-ab-set.json`. Extract the CURRENT system prompt verbatim from `Sources/AICleanupService.swift`.
-- For each model in the Settings catalog (haiku-4.5, gemini-2.5-flash-lite, gemini-2.0-flash, gpt-4o-mini, gpt-4o, sonnet — plus any newly cheap notable model on OpenRouter): run all 15 passages, temperature 0.1.
-- Score per the JSON's `scoring` block: content preservation %, filler removal %, paraphrase failures, mean latency, cost.
-- Table + recommendation. Only recommend switching if a model beats the current one on cost with ≥ equal preservation (preservation is the priority — see 2026-05-11 benchmark: Haiku 99.7%).
+- **Use the committed harness — do not write a new one.** `python3 test-assets/ab_harness.py` reads the frozen set, extracts the system prompt verbatim from `Sources/AICleanupService.swift`, reads the model list from the Settings catalog in `SettingsWindow.swift` (so a dead catalog entry surfaces here), scores per the JSON `scoring` block, and enforces the budget ceiling itself.
+  - `--dry-run` first for the call count and cost estimate; then a plain run; then `--reps 3` on the top 2–3 only.
+  - It holds a 10-minute run-lock. If it refuses, the sweep already ran — read the output rather than passing `--force`. The 2026-08 run billed for three sweeps instead of two because a re-import silently re-executed the whole thing.
+  - Add candidate models with `--models`; if one is worth keeping, add it to the Settings catalog rather than to the harness.
+- Add newly cheap notable OpenRouter models to the candidate list each run.
+- Table + recommendation. Only recommend switching if a model beats the current one on cost with ≥ equal preservation (preservation is the priority). **State the margin and the set size** — on 25 passages a sub-0.5pp preservation gap is not a result, and latency or cost should carry the decision instead.
+- Scoring set is at **v2** (2026-08-11): `umm` counts as filler, and dropping an adjacent verbatim repeat is not a paraphrase failure. **Paraphrase-failure counts do not compare across the v1/v2 boundary**; preservation and filler-removal percentages do. Never edit an existing passage — add new ones with new ids.
 
 ### 6. Speech-pattern observations (coaching, not judgment)
 - From the same history sample: disfluency rate trend vs previous report, dictation-length distribution, any pattern in where content seems weakest (e.g., ends of long dictations → trailing off quietly; Whisper drops mumbled trailing speech at the model level).

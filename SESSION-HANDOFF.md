@@ -65,12 +65,22 @@ The user reports whisper.cpp is returning garbage like "(mumbling)", "(muffled v
 - **Memory files:** `~/.claude/projects/-Users-danielfilson-Projects/memory/` — see `feedback_customwispr_*.md`
 
 ## Rollback
+
+> **Updated 2026-08-11:** `upgrade/audio-engine-v1.5` has been merged into `main`, so
+> `git checkout main` no longer reverts anything. The pre-merge state is preserved as the
+> tag `pre-streaming`.
+
 ```bash
 cd ~/Projects/BW/customwispr
-git checkout main
+git checkout pre-streaming
 bash build-arm64.sh
 ```
 This fully reverts to the pre-upgrade state with the old AVAudioRecorder engine.
+Return with `git checkout main && bash build-arm64.sh`.
+
+To revert only the cleanup model without a rebuild, edit `CLEANUP_MODEL` in
+`~/.custom-wispr.env` (back to `anthropic/claude-haiku-4-5`) and restart the app —
+Settings → API Key does the same thing from the UI.
 
 ## Context from Obsidian doc (key points)
 - Carbon `RegisterEventHotKey` is the correct hotkey approach for Tahoe (CGEvent tap and NSEvent monitor are broken)

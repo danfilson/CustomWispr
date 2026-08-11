@@ -1,12 +1,15 @@
 {
-  "version": 1,
+  "version": 2,
   "created": "2026-07-07",
   "purpose": "Fixed synthetic test set for monthly cleanup-model A/B comparison. Mimics Daniel's dictation style (rambling cadence, self-corrections, fillers, domain vocabulary). NEVER edit existing passages — month-over-month comparability depends on the set staying frozen. Add new passages with new ids if needed.",
   "scoring": {
-    "content_preservation": "Every non-filler word in the input must appear in the output in order. Fillers = um, uh, er, ah, hmm ONLY. Words like 'like', 'you know', 'so', 'basically' must be KEPT.",
+    "content_preservation": "Every non-filler word in the input must appear in the output in order. Fillers = um, umm, uh, er, ah, hmm ONLY. Words like 'like', 'you know', 'so', 'basically' must be KEPT.",
     "filler_removal": "Pure filler sounds should be removed.",
-    "no_paraphrase": "Word substitutions, reordering, or summarization = failure.",
-    "also_measure": ["latency_ms", "cost_usd_estimated_from_tokens"]
+    "no_paraphrase": "Word substitutions, reordering, or summarization = failure. Dropping an immediately repeated word or phrase is NOT a failure when the repetition is verbatim and adjacent, or separated only by a filler ('not the uh not the' -> 'not the' is acceptable). A self-correction where the speaker changed what they were saying must survive verbatim.",
+    "also_measure": [
+      "latency_ms",
+      "cost_usd_estimated_from_tokens"
+    ]
   },
   "passages": [
     {
@@ -68,6 +71,58 @@
     {
       "id": 15,
       "text": "okay last one uh please draft a reply to Susana about the thirty minute meeting on the fourth and mention that er even error prone auto closed caption transcription is more accessible than nothing"
+    },
+    {
+      "id": 16,
+      "text": "so the Dirigo Interactive site um needs the accessibility statement updated and uh basically we said WCAG two point two double A so the audit has to cover the new checkout flow"
+    },
+    {
+      "id": 17,
+      "text": "okay for GPCOG um the reporting dashboard is like the main deliverable and uh I want to get the SoW signed before we uh before we start any build work"
+    },
+    {
+      "id": 18,
+      "text": "um so Grondin came back on the Biddeford proposal and basically they want the discovery phase split out so it's like a separate line item"
+    },
+    {
+      "id": 19,
+      "text": "right so the whisper model is uh large v three turbo now and um it transcribes the fillers faithfully where the old one just like dropped them silently"
+    },
+    {
+      "id": 20,
+      "text": "so um I need to send Rhett the positioning brief and uh basically it should lead with the product management experience not not the agency stuff"
+    },
+    {
+      "id": 21,
+      "text": "okay the weed maps integration um is basically blocked on their API key rotation and uh we can't test the ingest until that lands"
+    },
+    {
+      "id": 22,
+      "text": "um so for the KRISP transcripts I want to like pull the action items into Obsidian automatically and uh basically tag them by client"
+    },
+    {
+      "id": 23,
+      "text": "so the health check runs on the first of the month um and it does the infrastructure bit the upstream review and uh the cleanup model A B test"
+    },
+    {
+      "id": 24,
+      "text": "right um the OpenRouter key expires in October and basically a dead key is uh is what caused the seven week outage last time so I want to rotate it early"
+    },
+    {
+      "id": 25,
+      "text": "um okay so the PDF accessibility remediation for the Bubble Wrap deck uh needs alt text on every informative image and basically the reading order fixed"
+    }
+  ],
+  "changelog": [
+    {
+      "version": 1,
+      "date": "2026-07-07",
+      "note": "Initial 15-passage set."
+    },
+    {
+      "version": 2,
+      "date": "2026-08-11",
+      "note": "Scoring updated: 'umm' added to the filler list, and adjacent verbatim repetition is no longer counted as a paraphrase failure — this mirrors the AICleanupService prompt change of the same date. All seven models in the 2026-08 A/B failed passage 12 identically under the v1 rule, which put a constant +1 in every paraphrase-failure column and cost that metric its ability to discriminate. Passages 16-25 added (real fork vocabulary; the 15-passage set could not resolve the 0.44pp margin between the top two models). NO existing passage was edited. Paraphrase-failure counts are NOT comparable across the v1/v2 boundary; preservation and filler-removal percentages are."
     }
   ]
 }
