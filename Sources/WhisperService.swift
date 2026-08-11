@@ -3,22 +3,27 @@ import Foundation
 class WhisperService {
 
     /// URLSession with a hard cap on total request time (upload + server processing + download)
+    /// The local whisper.cpp server sends no bytes until transcription completes, so the
+    /// idle timeout must cover the full processing time of a long recording — 30s here
+    /// caused URLSession to disconnect mid-transcription and the server to abort the job.
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30   // max idle time between packets
-        config.timeoutIntervalForResource = 120 // max total time for entire request
+        config.timeoutIntervalForRequest = 120  // max idle time between packets
+        config.timeoutIntervalForResource = 150 // max total time for entire request
         return URLSession(configuration: config)
     }()
 
-    func transcribe(audioFileURL: URL) async throws -> String {
+    /// `prompt` biases the model with preceding context — used when transcribing
+    /// streamed chunks so each chunk continues naturally from the previous one.
+    func transcribe(audioFileURL: URL, prompt: String? = nil) async throws -> String {
         // Retry once on transient failure
         do {
-            return try await attemptTranscribe(audioFileURL: audioFileURL)
+            return try await attemptTranscribe(audioFileURL: audioFileURL, prompt: prompt)
         } catch {
             if isTransient(error) {
                 log("Whisper request failed (\(error.localizedDescription)), retrying once...")
                 try await Task.sleep(nanoseconds: 500_000_000) // 0.5s backoff
-                return try await attemptTranscribe(audioFileURL: audioFileURL)
+                return try await attemptTranscribe(audioFileURL: audioFileURL, prompt: prompt)
             }
             throw error
         }
@@ -36,12 +41,12 @@ class WhisperService {
         return false
     }
 
-    private func attemptTranscribe(audioFileURL: URL) async throws -> String {
+    private func attemptTranscribe(audioFileURL: URL, prompt: String?) async throws -> String {
         switch Config.transcriptionMode {
         case .local:
-            return try await transcribeLocal(audioFileURL: audioFileURL)
+            return try await transcribeLocal(audioFileURL: audioFileURL, prompt: prompt)
         case .cloud:
-            return try await transcribeCloud(audioFileURL: audioFileURL)
+            return try await transcribeCloud(audioFileURL: audioFileURL, prompt: prompt)
         }
     }
 
@@ -49,7 +54,7 @@ class WhisperService {
 
     /// Sends audio to a local whisper.cpp server running the OpenAI-compatible API.
     /// Start the server with: whisper-server -m /path/to/model.bin --host 127.0.0.1 --port 8080
-    private func transcribeLocal(audioFileURL: URL) async throws -> String {
+    private func transcribeLocal(audioFileURL: URL, prompt: String? = nil) async throws -> String {
         let baseURL = Config.localWhisperBaseURL
         guard let url = URL(string: "\(baseURL)/inference") else {
             throw WhisperError.invalidURL
@@ -68,6 +73,13 @@ class WhisperService {
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n".data(using: .utf8)!)
         body.append("0.0\r\n".data(using: .utf8)!)
+
+        // prompt field — preceding-chunk context for streamed transcription
+        if let prompt = prompt, !prompt.isEmpty {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(prompt)\r\n".data(using: .utf8)!)
+        }
 
         // response_format field
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -108,7 +120,7 @@ class WhisperService {
 
     // MARK: - Cloud (OpenAI Whisper API)
 
-    private func transcribeCloud(audioFileURL: URL) async throws -> String {
+    private func transcribeCloud(audioFileURL: URL, prompt: String? = nil) async throws -> String {
         guard let url = URL(string: "\(Config.openAIBaseURL)/audio/transcriptions") else {
             throw WhisperError.invalidURL
         }
@@ -132,6 +144,13 @@ class WhisperService {
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
         body.append("en\r\n".data(using: .utf8)!)
+
+        // prompt field — preceding-chunk context for streamed transcription
+        if let prompt = prompt, !prompt.isEmpty {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(prompt)\r\n".data(using: .utf8)!)
+        }
 
         // audio file
         body.append("--\(boundary)\r\n".data(using: .utf8)!)

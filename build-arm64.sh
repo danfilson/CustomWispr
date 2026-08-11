@@ -34,6 +34,7 @@ swiftc \
     "${SOURCES_DIR}/KeyMonitor.swift" \
     "${SOURCES_DIR}/SettingsManager.swift" \
     "${SOURCES_DIR}/HistoryManager.swift" \
+    "${SOURCES_DIR}/HistorySuggester.swift" \
     "${SOURCES_DIR}/SettingsWindow.swift" \
     "${SOURCES_DIR}/WelcomeWindow.swift" \
     "${SOURCES_DIR}/UpdateChecker.swift" \
@@ -43,10 +44,31 @@ swiftc \
 echo "==> Copying resources..."
 cp "${RESOURCES_DIR}/Info.plist" "${APP_BUNDLE}/Contents/"
 
-echo "==> Code signing..."
-codesign --force --sign - \
-    --entitlements "${RESOURCES_DIR}/entitlements.plist" \
-    "${APP_BUNDLE}"
+echo "==> Detecting signing identity..."
+SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | grep -E "Developer ID Application|CustomWispr Dev" \
+    | head -1 | awk -F'"' '{print $2}')
+
+if [ -n "$SIGNING_IDENTITY" ]; then
+    echo "==> Code signing as: ${SIGNING_IDENTITY}"
+    codesign --force --sign "$SIGNING_IDENTITY" \
+        --entitlements "${RESOURCES_DIR}/entitlements.plist" \
+        "${APP_BUNDLE}"
+else
+    echo "==> WARNING: No stable signing identity found — falling back to ad-hoc."
+    echo "    TCC permissions will be invalidated on every rebuild."
+    echo "    See: ~/.claude/plans/customwispr-stable-signing-tcc-persistence.md"
+    codesign --force --sign - \
+        --entitlements "${RESOURCES_DIR}/entitlements.plist" \
+        "${APP_BUNDLE}"
+fi
+
+echo "==> Deploying to /Applications..."
+pkill -x "${APP_NAME}" 2>/dev/null; sleep 0.5
+rm -rf "/Applications/${APP_BUNDLE}"
+cp -R "${APP_BUNDLE}" "/Applications/${APP_BUNDLE}"
+echo "==> Launching..."
+open "/Applications/${APP_BUNDLE}"
 
 echo ""
 echo "=== Build complete (Apple Silicon): ${APP_BUNDLE} ==="
@@ -60,3 +82,9 @@ echo "  3. Grant Microphone permission when prompted"
 echo "  4. Create API key:"
 echo "       echo \"OPENAI_API_KEY=your-key-here\" > ~/.custom-wispr.env"
 echo "       chmod 600 ~/.custom-wispr.env"
+echo ""
+echo "TCC / Accessibility:"
+echo "  With the stable 'CustomWispr Dev' cert, Accessibility survives rebuilds."
+echo "  Do NOT run 'tccutil reset' — it destroys the TCC entry we want to keep."
+echo "  Only if the build fell back to ad-hoc signing (see warning above) will"
+echo "  a fresh permission prompt appear after deploying."

@@ -16,11 +16,16 @@ class AICleanupService {
     Return ONLY the cleaned text content, without the XML tags.
 
     Cleanup rules:
-    - Only remove pure filler sounds: uh, um, er, ah, hmm
+    - Only remove pure filler sounds: uh, um, umm, er, ah, hmm
     - KEEP words like "like", "right", "so", "well", "basically", "actually" — these are part of natural speech and often carry meaning
     - Fix punctuation and capitalization only
     - Preserve the speaker's exact words — do NOT remove, add, or substitute words
-    - Do NOT remove false starts, self-corrections, or repeated words — keep them verbatim
+    - Do NOT remove false starts or self-corrections where the speaker changed what they were \
+    saying — keep those verbatim (e.g. "send it Tuesday, no, Wednesday" stays as spoken)
+    - You MAY drop an immediately repeated word or phrase when the repetition is verbatim and \
+    adjacent, or separated only by a filler — e.g. "not the uh not the agency work" becomes \
+    "not the agency work"
+    - Never reorder, substitute, or rewrite words to smooth over a repetition
     - Do NOT "fix" sentence structure, word order, or phrasing — only punctuation and capitalization
     - Do NOT fix grammar by removing or reordering words — only add commas/periods/capitals
     - Preserve meaning, tone, and intent exactly as spoken
@@ -98,9 +103,16 @@ class AICleanupService {
         return (false, "")
     }
 
-    private func isRefusal(_ response: String) -> Bool {
-        let lower = response.lowercased()
-        return refusalPatterns.contains { lower.contains($0) }
+    /// Refusal detection. A real refusal (a) appears near the start of the response,
+    /// and (b) isn't an echo of words the user dictated themselves. The old detector
+    /// substring-matched the whole response, so legitimate transcriptions containing
+    /// "I'm sorry to do this last minute" tripped the refusal fallback.
+    private func isRefusal(_ response: String, input: String) -> Bool {
+        let head = String(response.prefix(120)).lowercased()
+        let lowerInput = input.lowercased()
+        return refusalPatterns.contains { pattern in
+            head.contains(pattern) && !lowerInput.contains(pattern)
+        }
     }
 
     /// URLSession with a hard cap on total request time
@@ -111,56 +123,93 @@ class AICleanupService {
         return URLSession(configuration: config)
     }()
 
-    func cleanup(rawText: String) async -> String {
+    /// Outcome of a cleanup pass. `fallbackReason` is non-nil only when the LLM path ran
+    /// and its result was thrown away, leaving `text` raw — the case worth telling the user
+    /// about. It stays nil when cleanup is skipped on purpose (mode off, or text too short
+    /// to be worth a round trip), because those are not failures.
+    struct CleanupResult {
+        let text: String
+        let fallbackReason: String?
+    }
+
+    /// A dead API key produced weeks of silently un-cleaned dictation because every failure
+    /// path here returned the raw text and said nothing. Reasons are short enough to read in
+    /// the overlay pill at a glance; the full error still goes to the log.
+    static func fallbackReason(for error: Error) -> String {
+        if let cleanupError = error as? CleanupError,
+           case .apiError(let statusCode, _) = cleanupError {
+            switch statusCode {
+            case 401, 403: return "API key rejected"
+            case 402: return "out of credit"
+            case 429: return "rate limited"
+            default: return "API error \(statusCode)"
+            }
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            switch nsError.code {
+            case NSURLErrorTimedOut:
+                return "cleanup timed out"
+            case NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost,
+                 NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost:
+                return "cleanup offline"
+            default:
+                return "network error"
+            }
+        }
+        return "cleanup failed"
+    }
+
+    func cleanup(rawText: String) async -> CleanupResult {
         // Apply find/replace BEFORE LLM so Whisper misspellings are corrected first
         let replaced = SettingsManager.shared.applyReplacements(rawText)
 
         // Skip LLM for very short text — not worth the extra API round trip
         guard replaced.count >= 30 else {
             log("Short transcription (\(replaced.count) chars), skipping LLM cleanup")
-            return replaced
+            return CleanupResult(text: replaced, fallbackReason: nil)
         }
 
         switch Config.cleanupMode {
         case .off:
             // No AI cleanup — just return find/replace result
             log("Cleanup mode: off — using find/replace only")
-            return replaced
+            return CleanupResult(text: replaced, fallbackReason: nil)
 
         case .local:
             do {
                 let cleaned = try await callOllama(rawText: replaced)
-                if isRefusal(cleaned) {
+                if isRefusal(cleaned, input: replaced) {
                     log("Local LLM returned a refusal. Falling back to replaced text.")
-                    return replaced
+                    return CleanupResult(text: replaced, fallbackReason: "model refused")
                 }
                 let (generatedLocal, reasonLocal) = isGeneratedContent(cleaned, input: replaced)
                 if generatedLocal {
                     log("Local LLM generated content instead of cleaning. Reason: \(reasonLocal). Falling back to replaced text.")
-                    return replaced
+                    return CleanupResult(text: replaced, fallbackReason: "model rewrote text")
                 }
-                return cleaned
+                return CleanupResult(text: cleaned, fallbackReason: nil)
             } catch {
                 log("Local LLM cleanup failed: \(error.localizedDescription). Using replaced text.")
-                return replaced
+                return CleanupResult(text: replaced, fallbackReason: Self.fallbackReason(for: error))
             }
 
         case .cloud:
             do {
                 let cleaned = try await callGPT(rawText: replaced)
-                if isRefusal(cleaned) {
+                if isRefusal(cleaned, input: replaced) {
                     log("GPT returned a refusal. Falling back to replaced text.")
-                    return replaced
+                    return CleanupResult(text: replaced, fallbackReason: "model refused")
                 }
                 let (generatedCloud, reasonCloud) = isGeneratedContent(cleaned, input: replaced)
                 if generatedCloud {
                     log("GPT generated content instead of cleaning. Reason: \(reasonCloud). Falling back to replaced text.")
-                    return replaced
+                    return CleanupResult(text: replaced, fallbackReason: "model rewrote text")
                 }
-                return cleaned
+                return CleanupResult(text: cleaned, fallbackReason: nil)
             } catch {
                 log("GPT cleanup failed: \(error.localizedDescription). Using replaced text.")
-                return replaced
+                return CleanupResult(text: replaced, fallbackReason: Self.fallbackReason(for: error))
             }
         }
     }
@@ -191,9 +240,12 @@ class AICleanupService {
 
         let (data, response) = try await session.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CleanupError.parseError
+        }
+        guard httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8).map { String($0.prefix(200)) } ?? "Unknown error"
-            throw CleanupError.apiError(errorBody)
+            throw CleanupError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
         }
 
         // Ollama response format: {"message": {"content": "..."}, ...}
@@ -232,9 +284,12 @@ class AICleanupService {
 
         let (data, response) = try await session.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CleanupError.parseError
+        }
+        guard httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8).map { String($0.prefix(200)) } ?? "Unknown error"
-            throw CleanupError.apiError(errorBody)
+            throw CleanupError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
         }
 
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -271,13 +326,13 @@ class AICleanupService {
 
     enum CleanupError: LocalizedError {
         case invalidURL
-        case apiError(String)
+        case apiError(statusCode: Int, message: String)
         case parseError
 
         var errorDescription: String? {
             switch self {
             case .invalidURL: return "Invalid API URL"
-            case .apiError(let msg): return "API error: \(msg)"
+            case .apiError(let statusCode, let message): return "API error \(statusCode): \(message)"
             case .parseError: return "Failed to parse API response"
             }
         }
