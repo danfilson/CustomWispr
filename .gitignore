@@ -18,3 +18,6 @@ dmg-temp/
 
 # Generated each run by the monthly health check; recreated if absent
 .health-check-state.json
+
+__pycache__/
+*.pyc
