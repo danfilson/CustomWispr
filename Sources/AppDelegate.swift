@@ -3,7 +3,51 @@ import AVFoundation
 
 func log(_ message: String) {
     let timestamp = ISO8601DateFormatter().string(from: Date())
-    fputs("[\(timestamp)] CustomWispr: \(message)\n", stderr)
+    let line = "[\(timestamp)] CustomWispr: \(message)\n"
+    fputs(line, stderr)
+    LogFile.shared.append(line)
+}
+
+/// Persistent copy of the log at ~/Library/Logs/CustomWispr.log. A login-launched
+/// menu-bar app has no stderr, so without this every per-stage timestamp the app
+/// emits is lost and a hung dictation can't be diagnosed after the fact. Rotates
+/// once at 5 MB, keeping a single CustomWispr.1.log.
+final class LogFile {
+    static let shared = LogFile()
+    private let url = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/CustomWispr.log")
+    private let maxBytes: UInt64 = 5_000_000
+    private let lock = NSLock()
+    private var handle: FileHandle?
+
+    func append(_ line: String) {
+        guard let data = line.data(using: .utf8) else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if handle == nil { open() }
+        guard let handle else { return }
+        handle.write(data)
+        if ((try? handle.offset()) ?? 0) > maxBytes { rotate() }
+    }
+
+    private func open() {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: url.path) {
+            fm.createFile(atPath: url.path, contents: nil)
+        }
+        handle = try? FileHandle(forWritingTo: url)
+        _ = try? handle?.seekToEnd()
+    }
+
+    private func rotate() {
+        try? handle?.close()
+        handle = nil
+        let previous = url.deletingLastPathComponent().appendingPathComponent("CustomWispr.1.log")
+        try? FileManager.default.removeItem(at: previous)
+        try? FileManager.default.moveItem(at: url, to: previous)
+        open()
+    }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {

@@ -29,6 +29,21 @@ class AudioRecorder {
     /// A final chunk shorter than this is discarded as key-noise, not speech.
     private let minFinalChunkSeconds: Double = 0.3
 
+    // Silence gate. Whisper large-v3 hallucinates on audio with no speech in it —
+    // a near-silent clip reliably comes back as "Thank you." with no_speech_prob ≈ 0,
+    // so the server can't be asked to filter it. The common case is the tail chunk:
+    // the user finishes a sentence, the pause rotates the chunk, and the key is
+    // released a second later, leaving 0.3–2s of room tone that transcribes as
+    // "Thank you." stitched onto the end. A chunk is sent only if it held at least
+    // this many voiced buffers (~85ms each at 48kHz/4096 frames).
+    private var chunkVoicedBuffers = 0
+    private let minVoicedBuffersForSpeech = 3   // ≈0.26s of voice
+    /// Speech level of the previous dictation. 5% of it is an extra floor for
+    /// "voiced", so a recording with no speech at all (where the running level
+    /// never learns anything) is still gated — while a mic 10× quieter than the
+    /// last one still clears it, so a mic change can never silently eat speech.
+    private var lastSpeechLevel: Float = 0
+
     // Cutting on a single quiet buffer (~85ms) splits phrases at inter-word gaps
     // and whisper then drops the orphaned fragment. A cut requires a sustained
     // pause — several consecutive buffers below a threshold that adapts to the
@@ -222,6 +237,7 @@ class AudioRecorder {
         self.chunkURLs = [fileURL]
         self.quietBufferRun = 0
         self.runningSpeechLevel = 0
+        self.chunkVoicedBuffers = 0
         fileLock.unlock()
 
         do {
@@ -268,6 +284,9 @@ class AudioRecorder {
             }
             let silenceThreshold = max(absoluteSilenceFloor, runningSpeechLevel * 0.15)
             quietBufferRun = level < silenceThreshold ? quietBufferRun + 1 : 0
+            if level >= max(silenceThreshold, lastSpeechLevel * 0.05) {
+                chunkVoicedBuffers += 1
+            }
 
             if let rate = fileProcessingFormat?.sampleRate, rate > 0 {
                 let minFrames = AVAudioFramePosition(minChunkSeconds * rate)
@@ -305,6 +324,9 @@ class AudioRecorder {
     private func rotateChunkLocked() -> (URL, Int)? {
         guard let finishedURL = currentChunkURL else { return nil }
         let finishedIndex = chunkIndex
+        let finishedIsSilent = chunkVoicedBuffers < minVoicedBuffersForSpeech
+        let finishedSeconds = Double(chunkFramesWritten) / (fileProcessingFormat?.sampleRate ?? 16000)
+        chunkVoicedBuffers = 0
 
         audioFile = nil // release closes and flushes the file
 
@@ -320,10 +342,17 @@ class AudioRecorder {
             chunkIndex += 1
             return (finishedURL, finishedIndex)
         }
-        chunkIndex += 1
         chunkFramesWritten = 0
         currentChunkURL = nextURL
         chunkURLs.append(nextURL)
+        if finishedIsSilent {
+            // Nothing to transcribe; reuse the index so the chain stays contiguous.
+            try? FileManager.default.removeItem(at: finishedURL)
+            chunkURLs.removeAll { $0 == finishedURL }
+            log(String(format: "Chunk %d discarded as silence (%.1fs, no voiced audio)", finishedIndex, finishedSeconds))
+            return nil
+        }
+        chunkIndex += 1
         return (finishedURL, finishedIndex)
     }
 
@@ -382,16 +411,26 @@ class AudioRecorder {
         fileProcessingFormat = nil
         let frames = framesWritten
         let finalFrames = chunkFramesWritten
+        let finalVoiced = chunkVoicedBuffers
         let finalIndex = chunkIndex
         var finalURL = currentChunkURL
         currentChunkURL = nil
+        chunkVoicedBuffers = 0
+        if runningSpeechLevel > 0 { lastSpeechLevel = runningSpeechLevel }
         var total = finalURL == nil ? chunkIndex : chunkIndex + 1
-        // A final chunk with almost no audio is key-release noise, not speech
-        if let url = finalURL, finalFrames < AVAudioFramePosition(minFinalChunkSeconds * rate) {
-            try? FileManager.default.removeItem(at: url)
-            chunkURLs.removeAll { $0 == url }
-            finalURL = nil
-            total -= 1
+        // A final chunk with almost no audio is key-release noise, and one with no
+        // voiced audio is room tone whisper would hallucinate over — neither is speech.
+        if let url = finalURL {
+            let tooShort = finalFrames < AVAudioFramePosition(minFinalChunkSeconds * rate)
+            let silent = finalVoiced < minVoicedBuffersForSpeech
+            if tooShort || silent {
+                try? FileManager.default.removeItem(at: url)
+                chunkURLs.removeAll { $0 == url }
+                finalURL = nil
+                total -= 1
+                log(String(format: "Final chunk discarded (%.1fs, %d voiced buffers): %@",
+                           Double(finalFrames) / rate, finalVoiced, tooShort ? "key noise" : "silence"))
+            }
         }
         fileLock.unlock()
 
