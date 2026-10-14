@@ -72,6 +72,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let maxRecordingDuration: TimeInterval = 300 // 5 minutes
     private let maxProcessingDuration: UInt64 = 150_000_000_000 // 150 seconds in nanoseconds
 
+    // Recording tail (ported from upstream v1.6.0). F5 is often pressed while the
+    // last word is still being spoken, so every stop keeps the mic open this long
+    // before the real stop runs. isRecording stays true for the whole tail: the
+    // recorder is still capturing, chunk rotation still fires, and the overlay and
+    // menu still show recording. isStopping marks that a finish is pending; an F5
+    // press during the tail cancels it and the same recording simply continues.
+    private var isStopping = false
+    private var pendingFinish: DispatchWorkItem?
+    private let recordingTailDuration: TimeInterval = 0.5
+
     // Streaming transcription: chunks arrive (possibly out of order, all on main)
     // as the recorder rotates files mid-dictation; each is transcribed immediately
     // in a serial chain so only the short final chunk remains after key-up.
@@ -296,6 +306,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             recorder.cleanup()
         }
 
+        // Pressed again during the tail: the user isn't done. Drop the pending finish
+        // and keep the same recording (and its chunks) going.
+        if isStopping {
+            pendingFinish?.cancel()
+            pendingFinish = nil
+            isStopping = false
+            keyMonitor.isRecordingToggle = true
+            if maxRecordingTimer == nil { armMaxRecordingTimer() }
+            log("Tail cancelled by key-down, continuing recording")
+            return
+        }
+
         guard !isRecording else {
             log("Ignoring F5 down (already recording)")
             return
@@ -316,10 +338,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             _ = try recorder.startRecording()
             log("Recording started")
 
-            maxRecordingTimer = Timer.scheduledTimer(withTimeInterval: maxRecordingDuration, repeats: false) { [weak self] _ in
-                log("Max recording duration reached (5 min), auto-stopping")
-                self?.handleFnUp()
-            }
+            armMaxRecordingTimer()
         } catch {
             log("ERROR: Failed to start recording: \(error.localizedDescription)")
             isRecording = false
@@ -328,13 +347,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func armMaxRecordingTimer() {
+        maxRecordingTimer?.invalidate()
+        maxRecordingTimer = Timer.scheduledTimer(withTimeInterval: maxRecordingDuration, repeats: false) { [weak self] _ in
+            log("Max recording duration reached (5 min), auto-stopping")
+            guard let self else { return }
+            self.maxRecordingTimer = nil
+            // Sync the toggle so the next F5 press reads as "start" (which, inside
+            // the tail, cancels it) rather than a no-op "stop".
+            self.keyMonitor.isRecordingToggle = false
+            self.handleFnUp()
+        }
+    }
+
+    /// Every stop (F5, menu toggle, max-duration timer) lands here. The mic stays
+    /// open for recordingTailDuration, then finishRecordingAndProcess() runs the
+    /// real stop. The tail only lengthens the final chunk; AudioRecorder's
+    /// final-chunk gate still discards it if it holds no voiced audio.
     private func handleFnUp() {
+        guard isRecording, !isStopping else { return }
+        isStopping = true
+        log(String(format: "Key released, holding mic %.1fs", recordingTailDuration))
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isStopping else { return }
+            self.pendingFinish = nil
+            self.finishRecordingAndProcess()
+        }
+        pendingFinish = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + recordingTailDuration, execute: work)
+    }
+
+    private func finishRecordingAndProcess() {
         guard isRecording else { return }
+        isStopping = false
         isRecording = false
         isProcessing = true
         updateListenMenuItem()
         maxRecordingTimer?.invalidate()
         maxRecordingTimer = nil
+        log("Tail elapsed, stopping recorder")
 
         let result = recorder.stopRecording()
 
