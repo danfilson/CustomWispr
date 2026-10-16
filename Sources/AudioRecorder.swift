@@ -462,6 +462,14 @@ class AudioRecorder {
         }
     }
 
+    /// Forgets the current chunk files without deleting them, so a cancelled dictation's
+    /// audio survives for recovery. cleanupStaleFiles() sweeps them at next launch.
+    func abandonChunks() {
+        fileLock.lock()
+        chunkURLs = []
+        fileLock.unlock()
+    }
+
     static func cleanupStaleFiles() {
         let tempDir = FileManager.default.temporaryDirectory
         guard let files = try? FileManager.default.contentsOfDirectory(

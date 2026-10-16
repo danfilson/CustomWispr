@@ -10,6 +10,11 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
     private var apiKeyStatusLabel: NSTextField?
     private var loginCheckbox: NSButton?
 
+    // History: the list shows the last 30 days unless the user asks for older entries.
+    // Nothing is moved or deleted — the health check and Suggest from History read the full file.
+    private var showOlderHistory = false
+    private let historyRecentWindow: TimeInterval = 30 * 86400
+
     // Microphone picker
     private var micPopup: NSPopUpButton?
     private var micEntries: [(label: String, uid: String)] = []
@@ -818,13 +823,21 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         view.addSubview(titleLabel)
         y -= 26
 
-        let subtitleLabel = makeLabel("Browse and copy past transcriptions.", size: 12, weight: .regular, color: mutedColor)
+        let subtitleText = showOlderHistory
+            ? "All saved transcriptions, newest first."
+            : "Transcriptions from the last 30 days, newest first."
+        let subtitleLabel = makeLabel(subtitleText, size: 12, weight: .regular, color: mutedColor)
         subtitleLabel.frame = NSRect(x: 20, y: y, width: width - 40, height: 18)
         subtitleLabel.autoresizingMask = [.width, .minYMargin]
         view.addSubview(subtitleLabel)
         y -= 28
 
+        // Tags on the Copy/Raw buttons index into the full entries array, so filter by index.
         let entries = HistoryManager.shared.entries
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-historyRecentWindow)
+        let visible = entries.indices.filter { showOlderHistory || entries[$0].timestamp >= cutoff }
+        let olderCount = entries.filter { $0.timestamp < cutoff }.count
 
         // Card container with scroll view
         let cardFrame = NSRect(x: 20, y: 56, width: width - 40, height: y - 56)
@@ -842,21 +855,25 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
 
-        if entries.isEmpty {
-            let emptyLabel = makeLabel("No transcriptions yet. Hold fn and speak to get started.", size: 13, weight: .regular, color: mutedColor)
+        if visible.isEmpty {
+            let emptyText = entries.isEmpty
+                ? "No transcriptions yet. Hold fn and speak to get started."
+                : "No transcriptions in the last 30 days."
+            let emptyLabel = makeLabel(emptyText, size: 13, weight: .regular, color: mutedColor)
             emptyLabel.alignment = .center
             emptyLabel.frame = NSRect(x: 20, y: cardFrame.height / 2 - 10, width: cardFrame.width - 40, height: 20)
             emptyLabel.autoresizingMask = [.width, .minYMargin]
             card.addSubview(emptyLabel)
         } else {
             let rowHeight: CGFloat = 60
-            let contentHeight = max(CGFloat(entries.count) * rowHeight, cardFrame.height - 2)
-            let documentView = NSView(frame: NSRect(x: 0, y: 0, width: cardFrame.width - 2, height: contentHeight))
+            let contentHeight = max(CGFloat(visible.count) * rowHeight, cardFrame.height - 2)
+            // Flipped so row 0 (newest) sits at the top and the scroll view opens there.
+            let documentView = FlippedView(frame: NSRect(x: 0, y: 0, width: cardFrame.width - 2, height: contentHeight))
             documentView.autoresizingMask = [.width]
 
-            let now = Date()
-            for (i, entry) in entries.enumerated() {
-                let rowY = contentHeight - CGFloat(i + 1) * rowHeight
+            for (position, i) in visible.enumerated() {
+                let entry = entries[i]
+                let rowY = CGFloat(position) * rowHeight
                 let row = NSView(frame: NSRect(x: 0, y: rowY, width: cardFrame.width - 2, height: rowHeight))
                 row.autoresizingMask = [.width]
 
@@ -909,7 +926,7 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
                 row.addSubview(copyButton)
 
                 // Row separator
-                if i < entries.count - 1 {
+                if position < visible.count - 1 {
                     let sep = NSView(frame: NSRect(x: 12, y: 0, width: cardFrame.width - 26, height: 1))
                     sep.wantsLayer = true
                     sep.layer?.backgroundColor = borderColor.cgColor
@@ -921,13 +938,6 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
             }
 
             scrollView.documentView = documentView
-
-            // Scroll to top (latest entries) after layout
-            DispatchQueue.main.async {
-                if let docView = scrollView.documentView {
-                    docView.scroll(NSPoint(x: 0, y: docView.frame.height))
-                }
-            }
         }
 
         card.addSubview(scrollView)
@@ -943,6 +953,14 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         clearButton.frame = NSRect(x: 110, y: 14, width: 110, height: 32)
         clearButton.autoresizingMask = [.maxXMargin, .maxYMargin]
         view.addSubview(clearButton)
+
+        if olderCount > 0 {
+            let olderTitle = showOlderHistory ? "Hide Older" : "Show Older (\(olderCount))"
+            let olderButton = makeSecondaryButton(title: olderTitle, target: self, action: #selector(toggleOlderHistoryClicked))
+            olderButton.frame = NSRect(x: 230, y: 14, width: 150, height: 32)
+            olderButton.autoresizingMask = [.maxXMargin, .maxYMargin]
+            view.addSubview(olderButton)
+        }
 
         return view
     }
@@ -989,7 +1007,12 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
 
     @objc private func refreshHistoryClicked() {
         HistoryManager.shared.reload()
-        showTab(3)
+        showTab(4)
+    }
+
+    @objc private func toggleOlderHistoryClicked() {
+        showOlderHistory.toggle()
+        showTab(4)
     }
 
     @objc private func clearHistoryClicked() {
@@ -1001,7 +1024,7 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
             HistoryManager.shared.clearHistory()
-            showTab(3)
+            showTab(4)
         }
     }
 
@@ -1256,4 +1279,9 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         )
         return button
     }
+}
+
+/// Top-left origin, so a scroll view's document opens at its first row.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }

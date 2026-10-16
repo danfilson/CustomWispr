@@ -66,6 +66,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var isRecording = false
     private var isProcessing = false
     private var processingTask: Task<Void, Never>?
+    private var processingStartedAt: Date?
+    /// An F5 press during processing only cancels it once it has run this long. Before
+    /// 2026-10-16 any press cancelled: a 5-minute dictation auto-stopped at the cap, the
+    /// user pressed F5 a second later to stop it, and the whole dictation was discarded.
+    /// Past the 150s processing timeout plus slack, the job really is stuck.
+    private let stuckProcessingThreshold: TimeInterval = 180
     private var cleanupWarningToken: UUID?
     private let cleanupWarningDuration: TimeInterval = 3
     private var maxRecordingTimer: Timer?
@@ -295,15 +301,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // If processing is stuck, cancel it so user can start fresh
+        // A press during processing is usually a late "stop" (e.g. right after the
+        // max-duration auto-stop). Ignore it unless processing is genuinely stuck.
         if isProcessing {
-            log("Cancelling stuck processing task")
+            let elapsed = processingStartedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            guard elapsed >= stuckProcessingThreshold else {
+                log(String(format: "Ignoring F5 down (still processing, %.0fs in)", elapsed))
+                keyMonitor.isRecordingToggle = false
+                return
+            }
+            // Stuck: start fresh, but keep the audio — it's the only copy of the
+            // dictation. Stale files are swept at next app launch.
+            log("Cancelling stuck processing task — chunk audio kept in temp dir for recovery (custom-wispr_*)")
             processingTask?.cancel()
             processingTask = nil
             chunkChain.forEach { $0.cancel() }
             isProcessing = false
+            processingStartedAt = nil
             overlay.hide()
-            recorder.cleanup()
+            recorder.abandonChunks()
         }
 
         // Pressed again during the tail: the user isn't done. Drop the pending finish
@@ -383,6 +399,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isStopping = false
         isRecording = false
         isProcessing = true
+        processingStartedAt = Date()
         updateListenMenuItem()
         maxRecordingTimer?.invalidate()
         maxRecordingTimer = nil
@@ -393,6 +410,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard result.totalChunks > 0, result.totalFrames > 0 else {
             log("No audio captured, nothing to transcribe")
             isProcessing = false
+            processingStartedAt = nil
             overlay.hide()
             recorder.cleanup()
             updateListenMenuItem()
@@ -489,6 +507,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [weak self] in
                     self?.isProcessing = false
                     self?.processingTask = nil
+                    self?.processingStartedAt = nil
                     if let warning {
                         self?.showCleanupWarning(warning)
                     } else {
@@ -546,6 +565,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             } catch is CancellationError {
+                // handleFnDown has already handed the chunk files off; deleting them
+                // here would also hit the next recording's chunks.
+                keepAudioAfterFailure = true
                 log("Processing was cancelled by user")
                 allChunkTasks.forEach { $0.cancel() }
             } catch ProcessingError.timeout {
