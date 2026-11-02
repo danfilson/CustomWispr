@@ -147,6 +147,7 @@ class AudioRecorder {
                 do {
                     try beginRecording(engine: engine, recordingFormat: format,
                                        fileURL: fileURL, useWAV: useWAV, prewarmed: true)
+                    scheduleNoAudioCheck(engine: engine, useWAV: useWAV)
                     return fileURL
                 } catch {
                     log("Pre-warmed start failed (\(error.localizedDescription)); falling back to cold start")
@@ -160,37 +161,96 @@ class AudioRecorder {
 
         // Cold path: switch device if needed, then build the engine fresh
         deviceToRestore = nil
+        let (engine, recordingFormat) = try buildColdEngine()
+        try beginRecording(engine: engine, recordingFormat: recordingFormat,
+                           fileURL: fileURL, useWAV: useWAV, prewarmed: false)
+        scheduleNoAudioCheck(engine: engine, useWAV: useWAV)
+        return fileURL
+    }
+
+    /// Switches the system default input to the selected mic (restored in
+    /// stopRecording) and builds an engine on it. AVAudioEngine can't simply be
+    /// bound to a non-default input on macOS while output is on another device —
+    /// tested 2026-11-02 with AirPods as output: the tap delivers zero frames.
+    ///
+    /// The switch is asynchronous inside CoreAudio. An engine built while it is still
+    /// settling (typical right after AirPods connect) binds to the previous device's
+    /// format — seen as 24kHz or 44.1kHz/2ch instead of the webcam's 48kHz/1ch — and
+    /// captures nothing, leaving the overlay on "Starting..." for the whole press.
+    /// So: rebuild until the engine's format matches the selected mic's own rate.
+    private func buildColdEngine() throws -> (AVAudioEngine, AVAudioFormat) {
+        var target: AudioDeviceID?
         if let deviceID = AudioRecorder.preferredInputDeviceID() {
+            target = deviceID
             let current = AudioRecorder.defaultInputDeviceID()
-            if current != deviceID {
-                if AudioRecorder.setDefaultInputDevice(deviceID) {
-                    deviceToRestore = current
-                    log("Recording on input device \(deviceID) (\(AudioRecorder.deviceName(deviceID) ?? "unknown")); will restore default afterward")
-                } else {
-                    log("WARNING: Could not switch to selected mic; using system default input")
-                }
-            } else {
+            if current == deviceID {
                 log("Recording on input device \(deviceID) (\(AudioRecorder.deviceName(deviceID) ?? "unknown")); already the default")
+            } else if AudioRecorder.setDefaultInputDevice(deviceID) {
+                if deviceToRestore == nil { deviceToRestore = current }
+                log("Recording on input device \(deviceID) (\(AudioRecorder.deviceName(deviceID) ?? "unknown")); will restore default afterward")
+            } else {
+                target = nil
+                log("WARNING: Could not switch to selected mic; using system default input")
             }
         } else {
             log("WARNING: No usable input device found; using system default input")
         }
 
-        let engine = AVAudioEngine()
-        let recordingFormat = engine.inputNode.outputFormat(forBus: 0)
-
-        guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
-            throw RecorderError.noMicrophone
+        let expectedRate = target.flatMap { AudioRecorder.nominalSampleRate($0) }
+        var engine = AVAudioEngine()
+        var format = engine.inputNode.outputFormat(forBus: 0)
+        if let expected = expectedRate, let target = target {
+            var attempt = 0
+            while (abs(format.sampleRate - expected) > 1 || AudioRecorder.defaultInputDeviceID() != target),
+                  attempt < 8 {
+                attempt += 1
+                Thread.sleep(forTimeInterval: 0.1)
+                engine = AVAudioEngine()
+                format = engine.inputNode.outputFormat(forBus: 0)
+            }
+            if attempt > 0 {
+                log(String(format: "Input switch settled after %d rebuild(s): %.0fHz %dch (mic reports %.0fHz)",
+                           attempt, format.sampleRate, format.channelCount, expected))
+            }
         }
 
-        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw RecorderError.noMicrophone
+        }
+        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             self?.handleTap(buffer: buffer)
         }
         engine.prepare()
+        return (engine, format)
+    }
 
-        try beginRecording(engine: engine, recordingFormat: recordingFormat,
-                           fileURL: fileURL, useWAV: useWAV, prewarmed: false)
-        return fileURL
+    /// Safety net for the same race: if a started engine has delivered no audio
+    /// after 0.8s, rebuild it once on a fresh file. Costs nothing when audio flows.
+    private func scheduleNoAudioCheck(engine: AVAudioEngine, useWAV: Bool) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, self.audioEngine === engine else { return }
+            self.fileLock.lock()
+            let silent = self.framesWritten == 0 && self.chunkIndex == 0
+            let staleURL = self.currentChunkURL
+            self.fileLock.unlock()
+            guard silent else { return }
+
+            log("WARNING: No audio 0.8s after start — rebuilding the engine")
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            self.audioEngine = nil
+            let fresh = FileManager.default.temporaryDirectory
+                .appendingPathComponent("custom-wispr_\(UUID().uuidString).\(useWAV ? "wav" : "m4a")")
+            do {
+                let (newEngine, format) = try self.buildColdEngine()
+                try self.beginRecording(engine: newEngine, recordingFormat: format,
+                                        fileURL: fresh, useWAV: useWAV, prewarmed: false)
+                if let stale = staleURL { try? FileManager.default.removeItem(at: stale) }
+                log("Engine rebuilt (\(Int(format.sampleRate))Hz, \(format.channelCount)ch)")
+            } catch {
+                log("ERROR: Engine rebuild failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func beginRecording(engine: AVAudioEngine, recordingFormat: AVAudioFormat,
@@ -499,6 +559,19 @@ class AudioRecorder {
     }
 
     @discardableResult
+    static func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var rate: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &rate) == noErr,
+              rate > 0 else { return nil }
+        return rate
+    }
+
     static func setDefaultInputDevice(_ device: AudioDeviceID) -> Bool {
         var dev = device
         var addr = AudioObjectPropertyAddress(

@@ -141,6 +141,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // the honest cue for when it's safe to start talking.
         recorder.onFirstBuffer = { [weak self] in
             guard let self = self, self.isRecording else { return }
+            self.audioArrived = true
             self.overlay.show(status: "Listening...")
         }
         recorder.onChunkReady = { [weak self] url, index in
@@ -295,6 +296,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Recording Flow
 
+    /// Set by onFirstBuffer; lets the start watchdog tell a dead mic from a live one.
+    private var audioArrived = false
+
     private func handleFnDown() {
         guard Config.isConfigured else {
             log("Ignoring F5 down (not configured)")
@@ -349,10 +353,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // onFirstBuffer upgrades this to "Listening..." once audio is flowing
         overlay.show(status: "Starting...")
+        audioArrived = false
 
         do {
             _ = try recorder.startRecording()
             log("Recording started")
+
+            // Don't leave "Starting..." up forever if the mic never delivers audio.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self, self.isRecording, !self.isStopping, !self.audioArrived else { return }
+                log("WARNING: No audio from the mic 2s after start")
+                self.overlay.show(status: "No audio from mic")
+            }
 
             armMaxRecordingTimer()
         } catch {
