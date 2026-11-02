@@ -144,6 +144,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.audioArrived = true
             self.overlay.show(status: "Listening...")
         }
+        recorder.onAudioStalled = { [weak self] in
+            guard let self = self, self.isRecording else { return }
+            self.overlay.show(status: "Mic stopped — press F5 to stop")
+        }
         recorder.onChunkReady = { [weak self] url, index in
             self?.chunkArrived(url: url, index: index)
         }

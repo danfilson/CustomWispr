@@ -4,7 +4,14 @@ import Foundation
 
 class AudioRecorder {
     private var audioEngine: AVAudioEngine?
+    /// Used instead of the engine when the selected mic isn't the system default.
+    private var directCapture: DirectCapture?
+    private var isCapturing: Bool { audioEngine != nil || directCapture != nil }
     private var prewarmedEngine: AVAudioEngine?
+    private var stallTimer: Timer?
+    private var stallRebuilds = 0
+    /// Called on main when the mic can't be revived mid-recording.
+    var onAudioStalled: (() -> Void)?
     private var configChangeObserver: NSObjectProtocol?
     private var audioFile: AVAudioFile?
     private var converter: AVAudioConverter?
@@ -74,11 +81,11 @@ class AudioRecorder {
     /// Only possible when no input-device switch is needed, because AVAudioEngine
     /// binds to the system default input device at creation time.
     func prewarm() {
-        guard prewarmedEngine == nil, audioEngine == nil else { return }
+        guard prewarmedEngine == nil, !isCapturing else { return }
         if let preferred = AudioRecorder.preferredInputDeviceID(),
            let current = AudioRecorder.defaultInputDeviceID(),
            preferred != current {
-            log("Pre-warm skipped: selected mic differs from system default (will switch at record time)")
+            log("Pre-warm skipped: selected mic differs from system default (will capture from it directly)")
             return
         }
         let engine = AVAudioEngine()
@@ -105,7 +112,7 @@ class AudioRecorder {
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
-            guard let self = self, self.audioEngine == nil else { return }
+            guard let self = self, !self.isCapturing else { return }
             log("Audio configuration changed — rebuilding pre-warmed engine")
             self.discardPrewarmedEngine()
             self.prewarm()
@@ -147,7 +154,7 @@ class AudioRecorder {
                 do {
                     try beginRecording(engine: engine, recordingFormat: format,
                                        fileURL: fileURL, useWAV: useWAV, prewarmed: true)
-                    scheduleNoAudioCheck(engine: engine, useWAV: useWAV)
+                    startStallMonitor(useWAV: useWAV)
                     return fileURL
                 } catch {
                     log("Pre-warmed start failed (\(error.localizedDescription)); falling back to cold start")
@@ -159,12 +166,28 @@ class AudioRecorder {
             }
         }
 
-        // Cold path: switch device if needed, then build the engine fresh
+        // Selected mic isn't the default (e.g. AirPods connected, webcam selected):
+        // capture straight from that device. No system-default switching, which
+        // is what kept breaking — see DirectCapture.
         deviceToRestore = nil
+        if let preferred = AudioRecorder.preferredInputDeviceID(),
+           preferred != AudioRecorder.defaultInputDeviceID(),
+           let uid = AudioRecorder.deviceUID(preferred),
+           let capture = DirectCapture(deviceUID: uid, onBuffer: { [weak self] in self?.handleTap(buffer: $0) }) {
+            log("Recording on input device \(preferred) (\(AudioRecorder.deviceName(preferred) ?? "unknown")) directly; system default untouched")
+            try beginRecording(engine: nil, recordingFormat: capture.format,
+                               fileURL: fileURL, useWAV: useWAV, prewarmed: false,
+                               start: { try capture.start() })
+            directCapture = capture
+            startStallMonitor(useWAV: useWAV)
+            return fileURL
+        }
+
+        // Cold path: switch device if needed, then build the engine fresh
         let (engine, recordingFormat) = try buildColdEngine()
         try beginRecording(engine: engine, recordingFormat: recordingFormat,
                            fileURL: fileURL, useWAV: useWAV, prewarmed: false)
-        scheduleNoAudioCheck(engine: engine, useWAV: useWAV)
+        startStallMonitor(useWAV: useWAV)
         return fileURL
     }
 
@@ -224,37 +247,79 @@ class AudioRecorder {
         return (engine, format)
     }
 
-    /// Safety net for the same race: if a started engine has delivered no audio
-    /// after 0.8s, rebuild it once on a fresh file. Costs nothing when audio flows.
-    private func scheduleNoAudioCheck(engine: AVAudioEngine, useWAV: Bool) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            guard let self, self.audioEngine === engine else { return }
+    /// Safety net for the same race, and for a mic that drops out mid-dictation:
+    /// if no new audio has reached the file for 1s while recording, swap in a fresh
+    /// engine and keep writing to the same chunk. On 2026-11-02 a 3.5-minute
+    /// dictation was lost because the engine delivered 0.2s of audio and then went
+    /// silent, and nothing noticed — the old one-shot start check only caught zero.
+    private func startStallMonitor(useWAV: Bool) {
+        stallTimer?.invalidate()
+        stallRebuilds = 0
+        var lastFrames: AVAudioFramePosition = -1
+        var lastProgress = Date()
+        stallTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
+            guard let self, self.isCapturing else { timer.invalidate(); return }
             self.fileLock.lock()
-            let silent = self.framesWritten == 0 && self.chunkIndex == 0
-            let staleURL = self.currentChunkURL
+            let frames = self.framesWritten + AVAudioFramePosition(self.chunkIndex) // rotation counts as progress
             self.fileLock.unlock()
-            guard silent else { return }
-
-            log("WARNING: No audio 0.8s after start — rebuilding the engine")
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-            self.audioEngine = nil
-            let fresh = FileManager.default.temporaryDirectory
-                .appendingPathComponent("custom-wispr_\(UUID().uuidString).\(useWAV ? "wav" : "m4a")")
-            do {
-                let (newEngine, format) = try self.buildColdEngine()
-                try self.beginRecording(engine: newEngine, recordingFormat: format,
-                                        fileURL: fresh, useWAV: useWAV, prewarmed: false)
-                if let stale = staleURL { try? FileManager.default.removeItem(at: stale) }
-                log("Engine rebuilt (\(Int(format.sampleRate))Hz, \(format.channelCount)ch)")
-            } catch {
-                log("ERROR: Engine rebuild failed: \(error.localizedDescription)")
+            if frames != lastFrames {
+                lastFrames = frames
+                lastProgress = Date()
+                return
             }
+            guard Date().timeIntervalSince(lastProgress) >= 1.0 else { return }
+            guard self.stallRebuilds < 3 else {
+                timer.invalidate()
+                log("ERROR: Mic still delivering no audio after 3 engine rebuilds — giving up")
+                self.onAudioStalled?()
+                return
+            }
+            self.stallRebuilds += 1
+            lastProgress = Date()
+            log("WARNING: No new audio for 1s (\(frames) frames so far) — rebuilding engine, attempt \(self.stallRebuilds)")
+            self.swapEngine(useWAV: useWAV)
         }
     }
 
-    private func beginRecording(engine: AVAudioEngine, recordingFormat: AVAudioFormat,
-                                fileURL: URL, useWAV: Bool, prewarmed: Bool) throws {
+    /// Replace the running engine without touching the chunk files, so audio
+    /// already captured is kept and new audio continues in the current chunk.
+    private func swapEngine(useWAV: Bool) {
+        if let capture = directCapture {
+            capture.restart()
+            log("Direct capture restarted")
+            return
+        }
+        if let old = audioEngine {
+            old.inputNode.removeTap(onBus: 0)
+            old.stop()
+        }
+        audioEngine = nil
+        do {
+            let (engine, format) = try buildColdEngine()
+            fileLock.lock()
+            if let fileFormat = fileProcessingFormat {
+                let differs = format.sampleRate != fileFormat.sampleRate
+                    || format.channelCount != fileFormat.channelCount
+                if useWAV {
+                    converter = differs ? AVAudioConverter(from: format, to: fileFormat) : nil
+                } else if let old = tapFormat, old.sampleRate != format.sampleRate
+                            || old.channelCount != format.channelCount {
+                    log("WARNING: Mic format changed mid-recording (cloud mode); audio may not be written")
+                }
+            }
+            fileLock.unlock()
+            try engine.start()
+            audioEngine = engine
+            tapFormat = format
+            log("Engine rebuilt (\(Int(format.sampleRate))Hz, \(format.channelCount)ch)")
+        } catch {
+            log("ERROR: Engine rebuild failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func beginRecording(engine: AVAudioEngine?, recordingFormat: AVAudioFormat,
+                                fileURL: URL, useWAV: Bool, prewarmed: Bool,
+                                start: (() throws -> Void)? = nil) throws {
         let fileSettings: [String: Any] = useWAV
             ? [
                 AVFormatIDKey: kAudioFormatLinearPCM,
@@ -301,7 +366,7 @@ class AudioRecorder {
         fileLock.unlock()
 
         do {
-            try engine.start()
+            if let engine = engine { try engine.start() } else { try start?() }
         } catch {
             fileLock.lock()
             self.audioFile = nil
@@ -418,6 +483,13 @@ class AudioRecorder {
 
     /// Must be called with fileLock held.
     private func writeBuffer(_ buffer: AVAudioPCMBuffer, to file: AVAudioFile) {
+        // A source can change format under us (device rebuilt, direct capture's
+        // first real buffer) — keep the converter matched to what actually arrives.
+        if let fileFormat = fileProcessingFormat, fileFormat.commonFormat == .pcmFormatFloat32,
+           buffer.format.sampleRate != fileFormat.sampleRate || buffer.format.channelCount != fileFormat.channelCount,
+           converter?.inputFormat != buffer.format {
+            converter = AVAudioConverter(from: buffer.format, to: fileFormat)
+        }
         do {
             if let converter = converter, let fileFormat = fileProcessingFormat {
                 let ratio = fileFormat.sampleRate / buffer.format.sampleRate
@@ -459,9 +531,13 @@ class AudioRecorder {
     }
 
     func stopRecording() -> StopResult {
+        stallTimer?.invalidate()
+        stallTimer = nil
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
+        directCapture?.stop()
+        directCapture = nil
         tapFormat = nil
 
         fileLock.lock()
@@ -730,5 +806,81 @@ class AudioRecorder {
                 return "No microphone available or sample rate is 0."
             }
         }
+    }
+}
+
+
+/// Records straight from one input device via AVCaptureSession, independent of
+/// the system default input and of the output device.
+///
+/// Why: with AirPods connected the default input is the AirPods, and the old
+/// approach — switch the system default to the selected mic, build an
+/// AVAudioEngine, switch back afterwards — kept breaking: engines built mid-switch
+/// captured nothing, and on 2026-11-02 engines delivered 0.2s of audio and then
+/// stalled (AirPods renegotiating the route kills an engine whose output is on
+/// them). Two long dictations were lost. Binding AVAudioEngine's input to a
+/// non-default device doesn't work either while output is elsewhere (zero frames).
+/// AVCaptureSession is input-only, so none of that applies.
+final class DirectCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+    let format: AVAudioFormat
+    private let session = AVCaptureSession()
+    private let queue = DispatchQueue(label: "custom-wispr.direct-capture", qos: .userInitiated)
+    private let onBuffer: (AVAudioPCMBuffer) -> Void
+
+    init?(deviceUID: String, onBuffer: @escaping (AVAudioPCMBuffer) -> Void) {
+        guard let device = AVCaptureDevice(uniqueID: deviceUID),
+              let input = try? AVCaptureDeviceInput(device: device),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(device.activeFormat.formatDescription),
+              asbd.pointee.mSampleRate > 0, asbd.pointee.mChannelsPerFrame > 0,
+              let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: asbd.pointee.mSampleRate,
+                                         channels: asbd.pointee.mChannelsPerFrame,
+                                         interleaved: false)
+        else { return nil }
+        self.format = format
+        self.onBuffer = onBuffer
+        super.init()
+
+        let output = AVCaptureAudioDataOutput()
+        output.audioSettings = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: true
+        ]
+        output.setSampleBufferDelegate(self, queue: queue)
+        guard session.canAddInput(input), session.canAddOutput(output) else { return nil }
+        session.addInput(input)
+        session.addOutput(output)
+    }
+
+    func start() throws {
+        session.startRunning()
+        guard session.isRunning else { throw AudioRecorder.RecorderError.noMicrophone }
+    }
+
+    func stop() {
+        session.stopRunning()
+        // Drain any buffer already in flight so nothing lands after stop returns.
+        queue.sync {}
+    }
+
+    func restart() {
+        session.stopRunning()
+        session.startRunning()
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        guard let desc = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc),
+              let fmt = AVAudioFormat(streamDescription: asbd) else { return }
+        let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
+        guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames) else { return }
+        buffer.frameLength = frames
+        guard CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer, at: 0, frameCount: Int32(frames), into: buffer.mutableAudioBufferList
+        ) == noErr else { return }
+        onBuffer(buffer)
     }
 }
