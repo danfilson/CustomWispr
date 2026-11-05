@@ -133,6 +133,14 @@
     {
       "id": 30,
       "text": "can you send the invoice to Grondin on Friday actually forget that send it Thursday morning and um cc Heggerty no wait don't cc anyone just send it to Grondin and let me rephrase mark it as final not draft"
+    },
+    {
+      "id": 31,
+      "text": "yeah so can you send the SOW to Jason sorry to Jess and um we need the pricing section or rather the payment terms section updated before Friday and so forth"
+    },
+    {
+      "id": 32,
+      "text": "okay so the audit is for Biddeford no not Biddeford it's for SMPDC and I think we should quote fifteen hours I don't know if that's enough but let's go with it actually it now lives in the Dirigo Interactive drive so grab it from there or whatever"
     }
   ],
   "changelog": [
@@ -160,6 +168,11 @@
       "date": "2026-11-05",
       "version": "v5",
       "note": "Added passages 28-30 (sentence-level retractions: 'no scratch that', 'actually forget that', 'no wait', 'let me rephrase') for tidy-mode scoring. Verbatim scoring of these passages expects retractions kept."
+    },
+    {
+      "date": "2026-11-05",
+      "version": "v5",
+      "note": "Passages 31-32: 'sorry, I meant' / 'or rather' / 'no, not X' retractions, 'yeah'/'okay' openers, a literal 'actually' that must be kept, and hedges/list closers that must survive tidy."
     }
   ]
 }

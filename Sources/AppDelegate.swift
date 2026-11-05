@@ -291,10 +291,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let resolved = SettingsManager.shared.resolveStyle(bundleId: bundleId, windowTitle: title, windowURL: url)
         dictationStyle = resolved.style
-        // Diagnostics only: lengths and host, never the title or full URL.
-        let host = URL(string: url)?.host ?? (url.isEmpty ? "-" : "?")
+        // Diagnostics only: lengths and whether a configured url term matched.
+        // Never the title, the full URL, or arbitrary hosts (that would be a browsing log).
+        let urlNote: String
+        if !urlRead { urlNote = "url unreadable" }
+        else if url.isEmpty { urlNote = "no url" }
+        else if let term = SettingsManager.shared.urlRuleTerm(in: url) { urlNote = "url matched \(term)" }
+        else { urlNote = "url not in rules" }
         let how = resolved.rule.map { "rule \($0)" } ?? "default/override"
-        log("Cleanup style: \(dictationStyle.rawValue) (\(bundleId.isEmpty ? "unknown app" : bundleId)) via \(how); title \(titleRead ? "\(title.count) chars" : "unreadable"), url \(urlRead ? "host \(host)" : "unreadable")")
+        log("Cleanup style: \(dictationStyle.rawValue) (\(bundleId.isEmpty ? "unknown app" : bundleId)) via \(how); title \(titleRead ? "\(title.count) chars" : "unreadable"), \(urlNote)")
     }
 
     @objc private func openSettings() {

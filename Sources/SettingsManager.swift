@@ -86,6 +86,16 @@ class SettingsManager {
         return (_defaultStyle, nil)
     }
 
+    /// For diagnostics: the first configured url term found in the URL, or nil. Lets the
+    /// key-down log say "url matched mail.google.com" without ever logging arbitrary hosts.
+    func urlRuleTerm(in url: String) -> String? {
+        guard !url.isEmpty else { return nil }
+        for rule in _cleanupRules {
+            if let term = rule.urlContains.first(where: { url.range(of: $0, options: .caseInsensitive) != nil }) { return term }
+        }
+        return nil
+    }
+
     /// Whisper keeps only the last 224 prompt tokens, so the glossary is capped and
     /// cut at a term boundary. Falls back to the replacement targets when no vocabulary is set.
     func whisperGlossary(maxChars: Int = 300) -> (text: String, terms: Int) {
