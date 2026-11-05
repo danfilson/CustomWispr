@@ -19,7 +19,7 @@ class SettingsManager {
     private var _replacements: [Replacement] = []
     private var _selectedMicUID: String = ""
     private var _vocabulary: [String] = []
-    private var _defaultStyle: CleanupStyle = .verbatim
+    private var _defaultStyle: CleanupStyle = .tidy
     private var _cleanupRules: [CleanupRule] = SettingsManager.defaultRules
     private var _styleOverride: String = "auto"
     private var _speakerContext: String = SettingsManager.defaultSpeakerContext
