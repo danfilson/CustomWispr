@@ -12,14 +12,14 @@ for what the routine does; edit here, not in the scheduled-task prompt.
 - Server log: `/tmp/whisper-server.log`
 - State between runs: `~/Projects/BW/customwispr/.health-check-state.json` (last upstream release tag seen, last run date)
 - Fork knowledge: Obsidian → `06-client-knowledge/Bubble Wrap/CustomWispr.md`
-- Fork customizations upstream does NOT have: streaming chunked transcription with prompt chaining + seam dedupe, pre-warmed audio engine, Carbon RegisterEventHotKey (Tahoe fix), stable `CustomWispr Dev` signing cert, local whisper + configurable cleanup models, find/replace + history suggester.
+- Fork customizations upstream does NOT have: streaming chunked transcription with prompt chaining + seam dedupe, pre-warmed audio engine, Carbon RegisterEventHotKey (Tahoe fix), stable `CustomWispr Dev` signing cert, local whisper + configurable cleanup models, find/replace + history suggester, **whisper glossary prompt** (`vocabulary` in settings), **key-down warm-up** of the whisper model, **two cleanup styles** (verbatim / tidy) chosen per app via `cleanupProfiles` (URL-host matched for browsers) with a menu-bar override, **speaker context** (`speakerContext`, includes a speaking-style profile), hesitation-ellipsis normalization, judge-scored tidy harness. Cleanup model is `anthropic/claude-sonnet-5.5` for both styles since 2026-11-05 (≈$3/month). Background: Obsidian note, "Recent changes (2026-11-05)".
 
 ## Guardrails
 
 - READ-ONLY toward app config and system: propose changes in the report; do not apply them.
 - NEVER run `tccutil reset` (destroys the TCC entry — see vault note).
 - Only restart the whisper-server if it is actually down (`curl -s http://127.0.0.1:8090` fails): `launchctl kickstart gui/501/com.personal.whisper-server`.
-- A/B test budget: abort the A/B section if estimated spend exceeds $0.50.
+- A/B test budget: abort the A/B section if estimated spend exceeds $0.50 for verbatim and $1.50 for tidy ($2.00 combined).
 - Real dictation content stays in this session's analysis only — never send history text to non-Anthropic models. The A/B test uses ONLY `test-assets/cleanup-ab-set.json`.
 
 ## Sections (all results go in the report)
@@ -31,6 +31,9 @@ for what the routine does; edit here, not in the scheduled-task prompt.
 - App: CustomWispr running, signed by `CustomWispr Dev` (`codesign -dvv`).
 - Orphaned `custom-wispr_*` files in the app's temp dir = failed dictations since last launch — count and flag.
 - Disk: models dir size, history file size (2000-entry cap means it self-limits — raised from 500 on 2026-08-11 so the file holds ~6 months rather than ~6 weeks).
+- **Glossary + warm-up alive (added 2026-11-05):** every dictation in `~/Library/Logs/CustomWispr.log` should have a `Whisper glossary: N terms` line and most key-downs a `Whisper warm-up done in X.Xs`. Report the warm-up time distribution (p50/p90) and any `warm-up failed`. Zero glossary lines ⇒ 🔴 (the vocabulary isn't reaching whisper).
+- **Latency by idle gap (the real slowness signal):** from the log, for each dictation compute key-up→`Injecting text` latency, the whisper share (stop → last `Chunk N transcribed`) and the idle gap since the previous dictation. Report p50/p90 in buckets <2 min / 2–15 / 15–60 / >1 h. Baseline before the warm-up: >1 h bucket p90 15 s vs 3 s otherwise. After: all buckets should be ≤5 s p90. Also list dictations whose whisper share exceeded 10 s with their timestamp — check whether a build or other heavy job was running (those are contention, not app faults).
+- **Style resolution:** count dictations by `Cleanup style:` line (verbatim/tidy) and by bundle id; flag `url unreadable` or `title unreadable` if they recur for a browser (the Accessibility read is failing).
 
 ### 2. Upstream release review
 - `curl -s https://api.github.com/repos/beausterling/CustomWispr/releases` — releases newer than `last_seen_tag` in the state file.
@@ -41,21 +44,27 @@ for what the routine does; edit here, not in the scheduled-task prompt.
 - Load history entries from the last month. Compute: dictation count, total words, avg words/dictation, empty-transcription count.
 - Scan raw texts for: recurring misrecognitions (same wrong word ≥2 times → propose a find/replace rule, checking it isn't already in `~/.custom-wispr-settings.json` replacements); garbled runs (candidate chunk-boundary artifacts — note timestamps); sentences that end mid-thought (trailing-off signal).
 - Propose find/replace additions in the report — do NOT edit the settings file.
+- **Vocabulary & style proposals (the "learns over time" loop, added 2026-11-05):** from the month's raw texts, list (a) capitalized / non-dictionary tokens with ≥3 occurrences that are not in `vocabulary` or in a find/replace target → propose glossary additions; (b) retraction phrases and verbal tics per 1k words (scratch that / no wait / sorry, I meant / or rather / no, not / you know / kind of / I mean / right? / yeah, / "..." etc.) vs the previous report → propose additions to the tidy prompt's lists only if a new phrase appears ≥5 times; (c) anything in `speakerContext` that has gone stale. Propose only; Daniel applies.
+- **Real-sample output quality (judge, added 2026-11-05):** sample 20 dictations ≥40 words from the month (stratified by style, newest-weighted) and score `cleanedText` against `rawText` with the harness judge rubric (`JUDGE_SYSTEM` + `JUDGE_MODEL` in `test-assets/ab_harness.py`, i.e. an Anthropic model via OpenRouter — the same route the cleanup itself already takes, so no new exposure; never a non-Anthropic model). Report per style: fidelity / completeness / intent / cleanliness / voice means, hallucination count, dropped-items list. Any hallucination ⇒ 🔴 with the passage quoted in the report (report only, never emailed). Cost ≈ $0.10.
+- **Ellipsis check:** residual "..." per 1k words in `cleanedText` (normalizer + prompt rule added 2026-11-05; raw baseline was 21/1k, cleaned should be ≈0).
+- **Split every accuracy metric by `style`** (history entries carry it from 2026-11-05); tidy is expected to shrink text ~15–20% and that is not content loss.
 - **Silent-cleanup canary (report this every run, even when it is 0%).** For every entry ≥30 chars, check whether `cleanedText` is byte-identical to `rawText` **and** the raw text has a defect a working cleanup must fix (starts lowercase, or ends with no terminal punctuation). Identical *with* an unfixed defect proves the LLM never touched that dictation. Report the rate for the current month and the previous one.
   - Healthy is **0%** — that is the observed value in every known-working window.
+  - **Canary v2 (per-day rule, added 2026-11-05):** also flag any single day with ≥10 entries where ≥90% are identical-with-defect — the aggregate rule under-read a 100%-identical two-day outage in October.
   - **>5% ⇒ 🔴 action needed**, cleanup is silently failing. A dead API key produced a 7-week outage (late May → 2026-07-14, ~300 dictations, ~30k words) that went unnoticed because nothing surfaced it. This single check is what would have caught it in week one; the overlay reporting added in `d814d4d` only covers failures the app itself sees.
 
 ### 4. Cleanup spend
 - `GET https://openrouter.ai/api/v1/auth/key` with the OpenRouter key → usage figures.
 - **Key expiry — escalate, don't just note it.** Read `expires_at` from that response and report days remaining.
-  - **< 60 days ⇒ 🔴 action needed** and it leads the Actions table. A dead key is the single highest-consequence failure this app has (see the canary in §3); an expiry date is the one form of it that is knowable in advance, so it must never be reported as a passive observation. Current key expires **2026-10-12**.
+  - **< 60 days ⇒ 🔴 action needed** and it leads the Actions table. A dead key is the single highest-consequence failure this app has (see the canary in §3); an expiry date is the one form of it that is knowable in advance, so it must never be reported as a passive observation. Current key expires **2027-01-12** (re-minted 2026-10-13).
   - Also `GET /api/v1/credits` for the account balance — flag under $5, since an exhausted balance fails identically to a dead key.
-- Cross-estimate: last month's history volume × current cleanup model pricing (input ≈ raw chars/4 tokens + ~350-token system prompt per call; output ≈ cleaned chars/4).
+- Cross-estimate: last month's history volume × current cleanup model pricing (input ≈ raw chars/4 tokens + ~900-token system prompt (verbatim) or ~1,050 (tidy), both including the ~230-token speaker context, per call; output ≈ cleaned chars/4).
 - Report monthly spend and $/dictation.
 
 ### 5. Cleanup model A/B (synthetic set only)
 - **Use the committed harness — do not write a new one.** `python3 test-assets/ab_harness.py` reads the frozen set, extracts the system prompt verbatim from `Sources/AICleanupService.swift`, reads the model list from the Settings catalog in `SettingsWindow.swift` (so a dead catalog entry surfaces here), scores per the JSON `scoring` block, and enforces the budget ceiling itself.
   - `--dry-run` first for the call count and cost estimate; then a plain run; then `--reps 3` on the top 2–3 only.
+  - **Tidy mode too (added 2026-11-05):** `python3 -u test-assets/ab_harness.py --mode tidy` — judge-scored (fidelity / completeness / intent / cleanliness / voice, hallucinations, proper-noun retention), default candidates are the catalog, default budget $1.50, prices read live from OpenRouter. The harness appends `speakerContext` exactly as the app does (`--no-context` / `--context-file` to A/B a context change). Rank by hallucinations first; a model with any hallucination is disqualified for tidy regardless of cost. Combined A/B ceiling for the run: **$2.00**.
   - It holds a 10-minute run-lock. If it refuses, the sweep already ran — read the output rather than passing `--force`. The 2026-08 run billed for three sweeps instead of two because a re-import silently re-executed the whole thing.
   - Add candidate models with `--models`; if one is worth keeping, add it to the Settings catalog rather than to the harness.
 - Add newly cheap notable OpenRouter models to the candidate list each run.
@@ -77,3 +86,4 @@ for what the routine does; edit here, not in the scheduled-task prompt.
 - Full report → Obsidian note `06-client-knowledge/Bubble Wrap/CustomWispr Health Checks/<YYYY-MM>.md` (create folder if missing). Frontmatter: `type: health-check, project: CustomWispr, date: <run date>`.
 - Email summary (5–10 lines: verdicts + anything needing action) to danielfilson@gmail.com via the google-workspace MCP. If only drafting is available, create the draft and say so in the note.
 - Lead the report with a one-line status: 🟢 all good / 🟡 attention suggested / 🔴 action needed.
+- **Run metadata (added 2026-11-05):** state the model that ran this check (from the session), the run date, total A/B + judge spend, and which sections were skipped and why. This is how Daniel audits the checker itself.
