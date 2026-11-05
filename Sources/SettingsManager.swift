@@ -9,6 +9,7 @@ struct CleanupRule {
     var style: CleanupStyle
     var bundleIds: [String]
     var titleContains: [String]
+    var urlContains: [String] = []
 }
 
 class SettingsManager {
@@ -27,7 +28,8 @@ class SettingsManager {
         CleanupRule(style: .tidy, bundleIds: ["com.apple.mail", "com.microsoft.Outlook"], titleContains: []),
         CleanupRule(style: .tidy,
                     bundleIds: ["com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser"],
-                    titleContains: ["Gmail", "Outlook"])
+                    titleContains: [],
+                    urlContains: ["mail.google.com", "outlook.office.com", "outlook.live.com"])
     ]
     private static let defaultSpeakerContext = "Daniel Filson runs Dirigo Interactive, a small agency doing web accessibility work (WCAG 2.2 AA, ADA Title II) for municipalities and regional councils in Maine such as GPCOG, SMPDC, and Biddeford. Tools often mentioned: HubSpot, Obsidian, Claude Code, CustomWispr, Krisp."
 
@@ -70,15 +72,18 @@ class SettingsManager {
 
     /// Override wins; otherwise the first rule whose bundle id matches (and whose title
     /// filter, if any, matches case-insensitively) decides; otherwise the default style.
-    func resolveStyle(bundleId: String, windowTitle: String) -> CleanupStyle {
-        if let forced = CleanupStyle(rawValue: _styleOverride) { return forced }
-        for rule in _cleanupRules where rule.bundleIds.contains(bundleId) {
-            if rule.titleContains.isEmpty
-                || rule.titleContains.contains(where: { windowTitle.range(of: $0, options: .caseInsensitive) != nil }) {
-                return rule.style
-            }
+    /// Resolves the cleanup style for the frontmost app. A rule matches when the bundle id
+    /// matches AND (no title/url terms are set, OR any title term is in the window title,
+    /// OR any url term is in the focused tab's URL). Returns the matched rule index for logging.
+    func resolveStyle(bundleId: String, windowTitle: String, windowURL: String = "") -> (style: CleanupStyle, rule: Int?) {
+        if let forced = CleanupStyle(rawValue: _styleOverride) { return (forced, nil) }
+        for (i, rule) in _cleanupRules.enumerated() where rule.bundleIds.contains(bundleId) {
+            let unconstrained = rule.titleContains.isEmpty && rule.urlContains.isEmpty
+            let titleHit = rule.titleContains.contains { windowTitle.range(of: $0, options: .caseInsensitive) != nil }
+            let urlHit = rule.urlContains.contains { windowURL.range(of: $0, options: .caseInsensitive) != nil }
+            if unconstrained || titleHit || urlHit { return (rule.style, i) }
         }
-        return _defaultStyle
+        return (_defaultStyle, nil)
     }
 
     /// Whisper keeps only the last 224 prompt tokens, so the glossary is capped and
@@ -162,7 +167,8 @@ class SettingsManager {
                     guard let style = (dict["style"] as? String).flatMap(CleanupStyle.init(rawValue:)) else { return nil }
                     return CleanupRule(style: style,
                                        bundleIds: dict["bundleIds"] as? [String] ?? [],
-                                       titleContains: dict["titleContains"] as? [String] ?? [])
+                                       titleContains: dict["titleContains"] as? [String] ?? [],
+                                       urlContains: dict["urlContains"] as? [String] ?? [])
                 }
             }
         }
@@ -187,7 +193,7 @@ class SettingsManager {
             "cleanupProfiles": [
                 "default": _defaultStyle.rawValue,
                 "rules": _cleanupRules.map {
-                    ["style": $0.style.rawValue, "bundleIds": $0.bundleIds, "titleContains": $0.titleContains] as [String: Any]
+                    ["style": $0.style.rawValue, "bundleIds": $0.bundleIds, "titleContains": $0.titleContains, "urlContains": $0.urlContains] as [String: Any]
                 }
             ] as [String: Any],
             "cleanupStyleOverride": _styleOverride,

@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "created": "2026-07-07",
   "purpose": "Fixed synthetic test set for monthly cleanup-model A/B comparison. Mimics Daniel's dictation style (rambling cadence, self-corrections, fillers, domain vocabulary). NEVER edit existing passages — month-over-month comparability depends on the set staying frozen. Add new passages with new ids if needed.",
   "scoring": {
@@ -121,6 +121,18 @@
     {
       "id": 27,
       "text": "right so I analysed the audit results and um we should prioritise the colour contrast failures because uh that's the biggest chunk of the backlog"
+    },
+    {
+      "id": 28,
+      "text": "hi there we should talk about how we are thinking through the CustomWispr app in fact no we shouldn't think about it let's just move ahead with our plan and I think we can do this no scratch that I don't think we can do this we need to play it by ear and put it on the calendar please"
+    },
+    {
+      "id": 29,
+      "text": "okay so you know I'm meant to be doing this dictation right and you know I'm doing it in a way that is natural well no scratch that this is pretty unnatural you know I right I think I'm hoping this will work and I won't be disappointed no scratch that I want it to work but I disappointment won't come into it it'll just be that we'll have to try again"
+    },
+    {
+      "id": 30,
+      "text": "can you send the invoice to Grondin on Friday actually forget that send it Thursday morning and um cc Heggerty no wait don't cc anyone just send it to Grondin and let me rephrase mark it as final not draft"
     }
   ],
   "changelog": [
@@ -143,6 +155,11 @@
       "version": 4,
       "date": "2026-08-11",
       "note": "Scorer folds transcription conventions every model applies: spoken numerals ('large v three turbo' -> 'v3', 'two point two double A' -> '2.2 AA') and compound proper nouns ('weed maps' -> 'Weedmaps'). These were scoring as content loss and produced 3 false paraphrase failures out of 27 on the first live run — the same constant-offset defect the v2 false-start change fixed, where noise that never varies hides real regressions. Verified the change is one-directional: genuine paraphrase, a dropped word, and a deleted 'not' are all still caught. v3 was never used for a reported monthly result, so no published figure is affected. No passage edited."
+    },
+    {
+      "date": "2026-11-05",
+      "version": "v5",
+      "note": "Added passages 28-30 (sentence-level retractions: 'no scratch that', 'actually forget that', 'no wait', 'let me rephrase') for tidy-mode scoring. Verbatim scoring of these passages expects retractions kept."
     }
   ]
 }

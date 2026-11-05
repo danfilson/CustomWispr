@@ -266,20 +266,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let app = NSWorkspace.shared.frontmostApplication
         let bundleId = app?.bundleIdentifier ?? ""
         var title = ""
+        var url = ""
+        var titleRead = false
+        var urlRead = false
         if let pid = app?.processIdentifier {
             let axApp = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(axApp, 0.25)  // never let a hung app delay key-down
             var window: CFTypeRef?
             if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &window) == .success,
                let window, CFGetTypeID(window) == AXUIElementGetTypeID() {
+                let win = window as! AXUIElement
                 var value: CFTypeRef?
-                if AXUIElementCopyAttributeValue(window as! AXUIElement, kAXTitleAttribute as CFString, &value) == .success {
-                    title = value as? String ?? ""
+                if AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &value) == .success,
+                   let t = value as? String {
+                    title = t; titleRead = true
+                }
+                // Browsers expose the focused tab's URL here (Chrome, Safari, Arc).
+                var doc: CFTypeRef?
+                if AXUIElementCopyAttributeValue(win, kAXDocumentAttribute as CFString, &doc) == .success,
+                   let d = doc as? String {
+                    url = d; urlRead = true
                 }
             }
         }
-        dictationStyle = SettingsManager.shared.resolveStyle(bundleId: bundleId, windowTitle: title)
-        log("Cleanup style: \(dictationStyle.rawValue) (\(bundleId.isEmpty ? "unknown app" : bundleId))")
+        let resolved = SettingsManager.shared.resolveStyle(bundleId: bundleId, windowTitle: title, windowURL: url)
+        dictationStyle = resolved.style
+        // Diagnostics only: lengths and host, never the title or full URL.
+        let host = URL(string: url)?.host ?? (url.isEmpty ? "-" : "?")
+        let how = resolved.rule.map { "rule \($0)" } ?? "default/override"
+        log("Cleanup style: \(dictationStyle.rawValue) (\(bundleId.isEmpty ? "unknown app" : bundleId)) via \(how); title \(titleRead ? "\(title.count) chars" : "unreadable"), url \(urlRead ? "host \(host)" : "unreadable")")
     }
 
     @objc private func openSettings() {
