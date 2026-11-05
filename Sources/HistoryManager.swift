@@ -5,6 +5,7 @@ struct HistoryEntry: Codable {
     let timestamp: Date
     let cleanedText: String
     let rawText: String?
+    let style: String?
 }
 
 class HistoryManager {
@@ -30,13 +31,14 @@ class HistoryManager {
         _entries = loadFromDisk()
     }
 
-    func addEntry(cleanedText: String, rawText: String?) {
+    func addEntry(cleanedText: String, rawText: String?, style: String? = nil) {
         queue.sync {
             let entry = HistoryEntry(
                 id: UUID(),
                 timestamp: Date(),
                 cleanedText: cleanedText,
-                rawText: rawText
+                rawText: rawText,
+                style: style
             )
             _entries.insert(entry, at: 0)
             if _entries.count > maxEntries {

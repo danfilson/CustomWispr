@@ -50,11 +50,53 @@ class WhisperService {
         }
     }
 
+    // MARK: - Warm-up
+
+    private let warmUpLock = NSLock()
+    private var warmUpRunning = false
+    private var lastWarmUpDone: Date?
+    private var lastWarmUpFailureLog: Date?
+
+    /// Fire-and-forget request with a short speech clip so the OS pages the mmap'd model
+    /// back into RAM. The clip must contain speech: the server's VAD skips silence.
+    func warmUp() async {
+        guard let clip = Bundle.main.url(forResource: "warmup", withExtension: "wav") else { return }
+        warmUpLock.lock()
+        if warmUpRunning || (lastWarmUpDone.map { Date().timeIntervalSince($0) < 120 } ?? false) {
+            warmUpLock.unlock()
+            return
+        }
+        warmUpRunning = true
+        warmUpLock.unlock()
+
+        log("Whisper warm-up sent")
+        let started = Date()
+        var failure: Error?
+        do {
+            _ = try await transcribeLocal(audioFileURL: clip, timeout: 30)
+        } catch {
+            failure = error
+        }
+
+        warmUpLock.lock()
+        warmUpRunning = false
+        if let failure {
+            let shouldLog = lastWarmUpFailureLog.map { Date().timeIntervalSince($0) >= 300 } ?? true
+            if shouldLog { lastWarmUpFailureLog = Date() }
+            warmUpLock.unlock()
+            if shouldLog { log("Whisper warm-up failed: \(failure.localizedDescription)") }
+        } else {
+            lastWarmUpDone = Date()
+            warmUpLock.unlock()
+            log(String(format: "Whisper warm-up done in %.1fs", Date().timeIntervalSince(started)))
+        }
+    }
+
     // MARK: - Local whisper.cpp Server
 
     /// Sends audio to a local whisper.cpp server running the OpenAI-compatible API.
     /// Start the server with: whisper-server -m /path/to/model.bin --host 127.0.0.1 --port 8080
-    private func transcribeLocal(audioFileURL: URL, prompt: String? = nil) async throws -> String {
+    private func transcribeLocal(audioFileURL: URL, prompt: String? = nil, timeout: TimeInterval? = nil) async throws -> String {
         let baseURL = Config.localWhisperBaseURL
         guard let url = URL(string: "\(baseURL)/inference") else {
             throw WhisperError.invalidURL
@@ -62,6 +104,7 @@ class WhisperService {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        if let timeout { request.timeoutInterval = timeout }
 
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")

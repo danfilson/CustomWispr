@@ -44,6 +44,7 @@ swiftc \
 echo "==> Copying resources..."
 cp "${RESOURCES_DIR}/Info.plist" "${APP_BUNDLE}/Contents/"
 cp "${RESOURCES_DIR}/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/"
+cp "${RESOURCES_DIR}/warmup.wav" "${APP_BUNDLE}/Contents/Resources/"
 
 echo "==> Clearing Gatekeeper quarantine..."
 xattr -cr "${APP_BUNDLE}"

@@ -40,13 +40,14 @@ class SettingsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTe
         let modelId: String?
     }
     private let cleanupOptions: [CleanupOption] = [
-        CleanupOption(label: "Off  ·  find/replace only",        mode: .off,   modelId: nil),
-        CleanupOption(label: "Claude Haiku 4.5  ·  Recommended", mode: .cloud, modelId: "anthropic/claude-haiku-4-5"),
+        CleanupOption(label: "Off  ·  find/replace only",         mode: .off,   modelId: nil),
         CleanupOption(label: "Gemini 3.1 Flash Lite  ·  Fastest", mode: .cloud, modelId: "google/gemini-3.1-flash-lite"),
+        CleanupOption(label: "Claude Haiku 5.5",                  mode: .cloud, modelId: "anthropic/claude-haiku-5.5"),
+        CleanupOption(label: "Claude Sonnet 5.5  ·  Best for Tidy",                 mode: .cloud, modelId: "anthropic/claude-sonnet-5.5"),
+        CleanupOption(label: "Claude Opus 5.5",                   mode: .cloud, modelId: "anthropic/claude-opus-5.5"),
         CleanupOption(label: "Gemini 2.5 Flash Lite",             mode: .cloud, modelId: "google/gemini-2.5-flash-lite"),
-        CleanupOption(label: "GPT-4o",                            mode: .cloud, modelId: "openai/gpt-4o"),
-        CleanupOption(label: "GPT-4o mini",                       mode: .cloud, modelId: "openai/gpt-4o-mini"),
-        CleanupOption(label: "Claude Sonnet 4.6",                 mode: .cloud, modelId: "anthropic/claude-sonnet-4-6"),
+        CleanupOption(label: "GPT-5 mini",                        mode: .cloud, modelId: "openai/gpt-5-mini"),
+        CleanupOption(label: "Mercury 2.5  ·  Cheapest",          mode: .cloud, modelId: "inception/mercury-2.5"),
         CleanupOption(label: "Local  ·  Ollama (llama3.2:3b)",    mode: .local, modelId: nil),
     ]
 

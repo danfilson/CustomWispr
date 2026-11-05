@@ -14,7 +14,7 @@ enum CleanupMode: String {
 enum Config {
     static let whisperModel = "whisper-1"
     static var gptModel: String {
-        return readEnvValue("CLEANUP_MODEL") ?? "openai/gpt-4o-mini"
+        return readEnvValue("CLEANUP_MODEL") ?? "google/gemini-3.1-flash-lite"
     }
 
     static var openAIBaseURL: String {

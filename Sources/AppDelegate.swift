@@ -63,6 +63,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let welcomeWindow = WelcomeWindow()
 
     private var listenMenuItem: NSMenuItem!
+    private var styleMenuItems: [String: NSMenuItem] = [:]
+    /// Resolved at F5 key-down from the frontmost app, so it reflects where the user was
+    /// when they started speaking, not where they are when processing finishes.
+    private var dictationStyle: CleanupStyle = .verbatim
     private var isRecording = false
     private var isProcessing = false
     private var processingTask: Task<Void, Never>?
@@ -223,6 +227,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let styleItem = NSMenuItem(title: "Cleanup style", action: nil, keyEquivalent: "")
+        let styleMenu = NSMenu()
+        for (title, key) in [("Auto", "auto"), ("Verbatim", "verbatim"), ("Tidy", "tidy")] {
+            let item = NSMenuItem(title: title, action: #selector(selectCleanupStyle(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = key
+            item.state = SettingsManager.shared.cleanupStyleOverride == key ? .on : .off
+            styleMenu.addItem(item)
+            styleMenuItems[key] = item
+        }
+        styleItem.submenu = styleMenu
+        menu.addItem(styleItem)
+
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
@@ -235,6 +252,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem.menu = menu
         log("Menu bar setup complete")
+    }
+
+    @objc private func selectCleanupStyle(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        SettingsManager.shared.cleanupStyleOverride = key
+        for (k, item) in styleMenuItems { item.state = k == key ? .on : .off }
+        log("Cleanup style override: \(key)")
+    }
+
+    /// Frontmost app and its focused window title (title is "" if Accessibility can't read it).
+    private func resolveDictationStyle() {
+        let app = NSWorkspace.shared.frontmostApplication
+        let bundleId = app?.bundleIdentifier ?? ""
+        var title = ""
+        if let pid = app?.processIdentifier {
+            let axApp = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(axApp, 0.25)  // never let a hung app delay key-down
+            var window: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &window) == .success,
+               let window, CFGetTypeID(window) == AXUIElementGetTypeID() {
+                var value: CFTypeRef?
+                if AXUIElementCopyAttributeValue(window as! AXUIElement, kAXTitleAttribute as CFString, &value) == .success {
+                    title = value as? String ?? ""
+                }
+            }
+        }
+        dictationStyle = SettingsManager.shared.resolveStyle(bundleId: bundleId, windowTitle: title)
+        log("Cleanup style: \(dictationStyle.rawValue) (\(bundleId.isEmpty ? "unknown app" : bundleId))")
     }
 
     @objc private func openSettings() {
@@ -346,6 +391,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             log("Ignoring F5 down (already recording)")
             return
         }
+        resolveDictationStyle()
         isRecording = true
         updateListenMenuItem()
 
@@ -362,6 +408,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             _ = try recorder.startRecording()
             log("Recording started")
+
+            // Page the model back in while the user is still speaking (local mode only).
+            if Config.transcriptionMode == .local {
+                let whisper = self.whisper
+                Task { await whisper.warmUp() }
+            }
 
             // Don't leave "Starting..." up forever if the mic never delivers audio.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
@@ -468,7 +520,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let task = Task<String, Error> {
             let prior = try await previous?.value ?? ""
             try Task.checkCancellation()
-            let prompt = prior.isEmpty ? nil : String(prior.suffix(400))
+            let glossary = SettingsManager.shared.whisperGlossary()
+            if index == 0, glossary.terms > 0 {
+                log("Whisper glossary: \(glossary.terms) terms (\(glossary.text.count) chars)")
+            }
+            let tail = prior.isEmpty ? "" : String(prior.suffix(400))
+            let combined = [glossary.text, tail].filter { !$0.isEmpty }.joined(separator: " ")
+            let prompt = combined.isEmpty ? nil : combined
             let text = try await whisper.transcribe(audioFileURL: url, prompt: prompt)
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             log("Chunk \(index) transcribed (\(trimmed.count) chars)")
@@ -509,6 +567,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let chain = chunkChain.last
         let allChunkTasks = chunkChain
+        let style = dictationStyle
 
         processingTask = Task {
             // On failure, keep the recording so the dictation isn't lost — it's the only
@@ -551,10 +610,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                         // Clean up with AI
                         await MainActor.run { overlay.show(status: "Cleaning up...") }
-                        let result = await cleanup.cleanup(rawText: rawText)
+                        let result = await cleanup.cleanup(rawText: rawText, style: style)
 
                         // Save to history (before paste, so it's retrievable even if paste fails)
-                        HistoryManager.shared.addEntry(cleanedText: result.text, rawText: rawText)
+                        HistoryManager.shared.addEntry(cleanedText: result.text, rawText: rawText, style: style.rawValue)
 
                         return result
                     }

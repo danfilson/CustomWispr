@@ -43,6 +43,7 @@ swiftc \
 
 echo "==> Copying resources..."
 cp "${RESOURCES_DIR}/Info.plist" "${APP_BUNDLE}/Contents/"
+cp "${RESOURCES_DIR}/warmup.wav" "${APP_BUNDLE}/Contents/Resources/"
 
 echo "==> Detecting signing identity..."
 SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \

@@ -26,6 +26,7 @@ for what the routine does; edit here, not in the scheduled-task prompt.
 
 ### 1. Infrastructure check
 - whisper-server: process up, correct model in plist AND in `ps` output, port 8090 healthy.
+- VAD: `--vad --vad-model …/ggml-silero-v5.1.2.bin --vad-speech-pad-ms 250` present in the plist AND in `ps` (added 2026-09-11 — without it large-v3-turbo returns "Thank you." for silent audio; verify with a 1.5s noise clip → `{"text":""}`).
 - Speed regression test: transcribe a ~10s generated clip (`say` → `afconvert` to 16kHz mono WAV → POST /inference); flag if it takes > 4s (baseline ~2s).
 - App: CustomWispr running, signed by `CustomWispr Dev` (`codesign -dvv`).
 - Orphaned `custom-wispr_*` files in the app's temp dir = failed dictations since last launch — count and flag.

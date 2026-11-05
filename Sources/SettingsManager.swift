@@ -5,12 +5,31 @@ struct Replacement {
     var replace: String
 }
 
+struct CleanupRule {
+    var style: CleanupStyle
+    var bundleIds: [String]
+    var titleContains: [String]
+}
+
 class SettingsManager {
     static let shared = SettingsManager()
 
     private let settingsPath: String
     private var _replacements: [Replacement] = []
     private var _selectedMicUID: String = ""
+    private var _vocabulary: [String] = []
+    private var _defaultStyle: CleanupStyle = .verbatim
+    private var _cleanupRules: [CleanupRule] = SettingsManager.defaultRules
+    private var _styleOverride: String = "auto"
+    private var _speakerContext: String = SettingsManager.defaultSpeakerContext
+
+    private static let defaultRules: [CleanupRule] = [
+        CleanupRule(style: .tidy, bundleIds: ["com.apple.mail", "com.microsoft.Outlook"], titleContains: []),
+        CleanupRule(style: .tidy,
+                    bundleIds: ["com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser"],
+                    titleContains: ["Gmail", "Outlook"])
+    ]
+    private static let defaultSpeakerContext = "Daniel Filson runs Dirigo Interactive, a small agency doing web accessibility work (WCAG 2.2 AA, ADA Title II) for municipalities and regional councils in Maine such as GPCOG, SMPDC, and Biddeford. Tools often mentioned: HubSpot, Obsidian, Claude Code, CustomWispr, Krisp."
 
     var replacements: [Replacement] {
         get { _replacements }
@@ -26,6 +45,61 @@ class SettingsManager {
             _selectedMicUID = newValue
             save()
         }
+    }
+
+    /// Proper nouns passed to Whisper as a prompt. Edited in the JSON file only.
+    var vocabulary: [String] {
+        get { _vocabulary }
+        set {
+            _vocabulary = newValue
+            save()
+        }
+    }
+
+    /// "auto" (use profile rules), "verbatim" or "tidy" (force for every dictation).
+    var cleanupStyleOverride: String {
+        get { _styleOverride }
+        set {
+            _styleOverride = newValue
+            save()
+        }
+    }
+
+    /// Static background about the speaker, appended to the cleanup prompt when non-empty.
+    var speakerContext: String { _speakerContext }
+
+    /// Override wins; otherwise the first rule whose bundle id matches (and whose title
+    /// filter, if any, matches case-insensitively) decides; otherwise the default style.
+    func resolveStyle(bundleId: String, windowTitle: String) -> CleanupStyle {
+        if let forced = CleanupStyle(rawValue: _styleOverride) { return forced }
+        for rule in _cleanupRules where rule.bundleIds.contains(bundleId) {
+            if rule.titleContains.isEmpty
+                || rule.titleContains.contains(where: { windowTitle.range(of: $0, options: .caseInsensitive) != nil }) {
+                return rule.style
+            }
+        }
+        return _defaultStyle
+    }
+
+    /// Whisper keeps only the last 224 prompt tokens, so the glossary is capped and
+    /// cut at a term boundary. Falls back to the replacement targets when no vocabulary is set.
+    func whisperGlossary(maxChars: Int = 300) -> (text: String, terms: Int) {
+        var source = _vocabulary.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if source.isEmpty {
+            var seen = Set<String>()
+            source = _replacements.map { $0.replace.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty && seen.insert($0).inserted }
+        }
+        var used: [String] = []
+        var length = 1 // trailing period
+        for term in source {
+            let added = term.count + (used.isEmpty ? 0 : 2)
+            if length + added > maxChars { break }
+            used.append(term)
+            length += added
+        }
+        guard !used.isEmpty else { return ("", 0) }
+        return (used.joined(separator: ", ") + ".", used.count)
     }
 
     private init() {
@@ -76,13 +150,48 @@ class SettingsManager {
         if let uid = json["selectedMicUID"] as? String {
             _selectedMicUID = uid
         }
+        if let vocab = json["vocabulary"] as? [String] {
+            _vocabulary = vocab
+        }
+        if let profiles = json["cleanupProfiles"] as? [String: Any] {
+            if let def = (profiles["default"] as? String).flatMap(CleanupStyle.init(rawValue:)) {
+                _defaultStyle = def
+            }
+            if let rules = profiles["rules"] as? [[String: Any]] {
+                _cleanupRules = rules.compactMap { dict in
+                    guard let style = (dict["style"] as? String).flatMap(CleanupStyle.init(rawValue:)) else { return nil }
+                    return CleanupRule(style: style,
+                                       bundleIds: dict["bundleIds"] as? [String] ?? [],
+                                       titleContains: dict["titleContains"] as? [String] ?? [])
+                }
+            }
+        }
+        if let override = json["cleanupStyleOverride"] as? String {
+            _styleOverride = override
+        }
+        if let context = json["speakerContext"] as? String {
+            _speakerContext = context
+        }
+        // Write defaults for any key the file doesn't have yet
+        if json["cleanupProfiles"] == nil || json["cleanupStyleOverride"] == nil || json["speakerContext"] == nil {
+            save()
+        }
     }
 
     private func save() {
         let arr = _replacements.map { ["find": $0.find, "replace": $0.replace] }
         let json: [String: Any] = [
             "replacements": arr,
-            "selectedMicUID": _selectedMicUID
+            "selectedMicUID": _selectedMicUID,
+            "vocabulary": _vocabulary,
+            "cleanupProfiles": [
+                "default": _defaultStyle.rawValue,
+                "rules": _cleanupRules.map {
+                    ["style": $0.style.rawValue, "bundleIds": $0.bundleIds, "titleContains": $0.titleContains] as [String: Any]
+                }
+            ] as [String: Any],
+            "cleanupStyleOverride": _styleOverride,
+            "speakerContext": _speakerContext
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: json, options: .prettyPrinted) else {
             log("ERROR: Failed to serialize settings")

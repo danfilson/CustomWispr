@@ -1,5 +1,7 @@
 # CustomWispr Session Handoff — 2026-06-08
 
+> **Update 2026-11-05:** accuracy/latency review actioned. Whisper now gets a **glossary prompt** (`vocabulary` in settings) on every chunk and a **warm-up request at key-down** (model page-in moved off the paste path). Added a **tidy cleanup style** with app-aware profiles (`cleanupProfiles`, menu bar → Cleanup style), **speaker context**, a refreshed model catalog, and a judge-scored `--mode tidy` in the A/B harness. Cleanup model switched to `anthropic/claude-sonnet-5.5` for both styles (first tidy sweep: 0 hallucinations, 98% name retention, ≈$3/mo). Full write-up: Obsidian → `06-client-knowledge/Bubble Wrap/CustomWispr.md`, "Recent changes (2026-11-05)".
+
 > **Update 2026-07-04:** Open issues A and C below are RESOLVED.
 >
 > - **Issue C (model not persisted):** confirmed as the cause of the quality regression — a reboot reverted the server to `base.en`. The launchd plist now pins `ggml-large-v3-turbo.bin` with `--threads 8`. Benchmarked: more accurate than base.en on proper nouns AND ~7× faster (Metal); an 83.6s clip transcribes in 9.4s.
