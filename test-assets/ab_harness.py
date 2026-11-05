@@ -382,6 +382,29 @@ def price_for(model: str) -> tuple:
     return (0.0, 0.0)
 
 
+CONTEXT_WRAPPER = ("\n\nBackground about the speaker, for understanding references only. "
+                   "Never add information from it to the output, and never let it change what the speaker said:\n<context>\n{ctx}\n</context>")
+SETTINGS_JSON = Path.home() / ".custom-wispr-settings.json"
+
+
+def speaker_context(a) -> tuple:
+    """(context_text, source). --no-context -> ("", "none"); --context-file -> that file;
+    default -> speakerContext from the settings JSON, so the harness matches the app."""
+    if getattr(a, "no_context", False):
+        return "", "none"
+    if getattr(a, "context_file", None):
+        return Path(a.context_file).read_text().strip(), a.context_file
+    try:
+        ctx = json.loads(SETTINGS_JSON.read_text()).get("speakerContext", "")
+        return (ctx or "").strip(), "settings speakerContext"
+    except (OSError, ValueError):
+        return "", "none (settings unreadable)"
+
+
+def with_context(prompt: str, ctx: str) -> str:
+    return prompt + CONTEXT_WRAPPER.format(ctx=ctx) if ctx else prompt
+
+
 def tidy_prompt_source(prompt_file) -> tuple:
     try:
         return system_prompt("tidySystemPrompt"), "Sources/AICleanupService.swift tidySystemPrompt"
@@ -559,12 +582,14 @@ def tidy_main(a) -> int:
     data = json.loads(AB_SET.read_text())
     passages = data["passages"]
     prompt, source = tidy_prompt_source(a.prompt_file)
+    ctx, ctx_source = speaker_context(a)
+    prompt = with_context(prompt, ctx)
     models = a.models.split(",") if a.models else TIDY_DEFAULT_MODELS
     est, calls = tidy_estimate(models, passages, prompt)
     print(f"[tidy] set v{data['version']}: {len(passages)} passages x {len(models)} models "
           f"= {len(passages) * len(models)} candidate calls + {len(passages) * len(models)} judge calls "
           f"({JUDGE_MODEL}) = {calls} calls")
-    print(f"prompt source: {source} ({len(prompt)} chars)")
+    print(f"prompt source: {source} ({len(prompt)} chars incl. context); context: {ctx_source} ({len(ctx)} chars)")
     print(f"estimated cost: ${est:.4f} (budget ${a.budget:.2f})")
     if a.dry_run:
         print("\n".join(f"  - {m}" for m in models))
@@ -624,6 +649,8 @@ def main(argv=None) -> int:
                     help="tidy = judge-scored evaluation of the tidy prompt")
     ap.add_argument("--prompt-file", default=str(DEFAULT_TIDY_PROMPT_FILE),
                     help="tidy mode fallback when tidySystemPrompt is absent from the Swift source")
+    ap.add_argument("--context-file", help="speaker context to append (default: speakerContext from ~/.custom-wispr-settings.json)")
+    ap.add_argument("--no-context", action="store_true", help="run without any speaker context")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--json-out", help="write full results here")
     ap.add_argument("--force", action="store_true", help="ignore the run-lock")
@@ -637,12 +664,13 @@ def main(argv=None) -> int:
 
     data = json.loads(AB_SET.read_text())
     passages = data["passages"]
-    prompt = system_prompt()
+    ctx, ctx_source = speaker_context(a)
+    prompt = with_context(system_prompt(), ctx)
     models = a.models.split(",") if a.models else [m for m in catalog_models()]
 
     print(f"set v{data['version']}: {len(passages)} passages x {len(models)} models "
           f"x {a.reps} rep(s) = {len(passages) * len(models) * a.reps} calls")
-    print(f"prompt: {len(prompt)} chars extracted from AICleanupService.swift")
+    print(f"prompt: {len(prompt)} chars extracted from AICleanupService.swift; context: {ctx_source} ({len(ctx)} chars)")
     if a.dry_run:
         print("\n".join(f"  - {m}" for m in models))
         return 0
