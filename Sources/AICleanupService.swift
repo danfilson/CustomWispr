@@ -26,6 +26,7 @@ class AICleanupService {
     - Only remove pure filler sounds: uh, um, umm, er, ah, hmm
     - KEEP words like "like", "right", "so", "well", "basically", "actually" — these are part of natural speech and often carry meaning
     - Fix punctuation and capitalization only
+    - Whisper writes "..." where the speaker hesitated or trailed off. That is a transcription artifact, not something the speaker said: replace it with a comma or period as the sentence requires, or drop it. Never leave hesitation ellipses in the output
     - Preserve the speaker's exact words — do NOT remove, add, or substitute words
     - Do NOT remove false starts or self-corrections where the speaker changed what they were \
     saying — keep those verbatim (e.g. "send it Tuesday, no, Wednesday" stays as spoken)
@@ -69,6 +70,26 @@ class AICleanupService {
     - Do NOT add commentary, notes, or responses
     - Return ONLY the cleaned text, nothing else
     """
+
+    /// Whisper writes "..." where the speaker hesitated or trailed off. Turn those into ordinary
+    /// punctuation before find/replace and the LLM so neither style has to guess what they mean.
+    static func normalizeHesitation(_ text: String) -> (text: String, count: Int) {
+        var s = text.replacingOccurrences(of: "\u{2026}", with: "...")
+        let count = s.components(separatedBy: "...").count - 1
+        guard count > 0 else { return (text, 0) }
+        func sub(_ pattern: String, _ template: String) {
+            s = s.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
+        }
+        sub(#"\s*\.{3,}\s*$"#, ".")                        // end of text → period
+        sub(#"\s*\.{3,}\s*(?=[\"'(]*[A-Z])"#, ". ")        // before a capital → sentence break
+        sub(#"\s*\.{3,}\s*"#, ", ")                        // anywhere else → comma
+        sub(#",\s*(,\s*)+"#, ", ")                         // ", , " → ", "
+        sub(#"\s*,\s*\."#, ".")                            // ", ." → "."
+        sub(#"([?!])\s*,"#, "$1")                          // "?," → "?"
+        sub(#"^\s*,\s*"#, "")                              // leading ", "
+        sub(#"[ \t]{2,}"#, " ")
+        return (s, count)
+    }
 
     private func prompt(for style: CleanupStyle) -> String {
         let base = style == .tidy ? tidySystemPrompt : systemPrompt
@@ -205,8 +226,10 @@ class AICleanupService {
     }
 
     func cleanup(rawText: String, style: CleanupStyle = .verbatim) async -> CleanupResult {
-        // Apply find/replace BEFORE LLM so Whisper misspellings are corrected first
-        let replaced = SettingsManager.shared.applyReplacements(rawText)
+        // Hesitation "..." → ordinary punctuation, then find/replace, then the LLM
+        let normalized = Self.normalizeHesitation(rawText)
+        if normalized.count > 0 { log("Normalized \(normalized.count) hesitation ellipses") }
+        let replaced = SettingsManager.shared.applyReplacements(normalized.text)
 
         // Skip LLM for very short text — not worth the extra API round trip
         guard replaced.count >= 30 else {
