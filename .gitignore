@@ -21,3 +21,6 @@ dmg-temp/
 
 __pycache__/
 *.pyc
+
+# Real dictations promoted from F6 feedback for the A/B harness (Anthropic-only; repo is public)
+test-assets/cleanup-ab-real.json

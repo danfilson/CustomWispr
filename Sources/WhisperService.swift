@@ -56,6 +56,13 @@ class WhisperService {
     private var warmUpRunning = false
     private var lastWarmUpDone: Date?
     private var lastWarmUpFailureLog: Date?
+    private var lastWarmUpNote = "none"
+
+    /// Outcome of the most recent key-down warm-up, for the history record.
+    func warmUpNote() -> String {
+        warmUpLock.lock(); defer { warmUpLock.unlock() }
+        return lastWarmUpNote
+    }
 
     /// Fire-and-forget request with a short speech clip so the OS pages the mmap'd model
     /// back into RAM. The clip must contain speech: the server's VAD skips silence.
@@ -63,6 +70,7 @@ class WhisperService {
         guard let clip = Bundle.main.url(forResource: "warmup", withExtension: "wav") else { return }
         warmUpLock.lock()
         if warmUpRunning || (lastWarmUpDone.map { Date().timeIntervalSince($0) < 120 } ?? false) {
+            lastWarmUpNote = warmUpRunning ? "skipped (running)" : "skipped (recent)"
             warmUpLock.unlock()
             return
         }
@@ -83,10 +91,12 @@ class WhisperService {
         if let failure {
             let shouldLog = lastWarmUpFailureLog.map { Date().timeIntervalSince($0) >= 300 } ?? true
             if shouldLog { lastWarmUpFailureLog = Date() }
+            lastWarmUpNote = "failed"
             warmUpLock.unlock()
             if shouldLog { log("Whisper warm-up failed: \(failure.localizedDescription)") }
         } else {
             lastWarmUpDone = Date()
+            lastWarmUpNote = String(format: "done %.1fs", Date().timeIntervalSince(started))
             warmUpLock.unlock()
             log(String(format: "Whisper warm-up done in %.1fs", Date().timeIntervalSince(started)))
         }

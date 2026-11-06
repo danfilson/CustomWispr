@@ -61,12 +61,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let settingsWindow = SettingsWindow()
     private let welcomeWindow = WelcomeWindow()
+    private let feedbackWindow = FeedbackWindow()
 
     private var listenMenuItem: NSMenuItem!
     private var styleMenuItems: [String: NSMenuItem] = [:]
     /// Resolved at F5 key-down from the frontmost app, so it reflects where the user was
     /// when they started speaking, not where they are when processing finishes.
     private var dictationStyle: CleanupStyle = .verbatim
+    private var dictationApp = ""
+    private var dictationRule: Int?
+    private var recordingStartedAt: Date?
     private var isRecording = false
     private var isProcessing = false
     private var processingTask: Task<Void, Never>?
@@ -240,6 +244,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         styleItem.submenu = styleMenu
         menu.addItem(styleItem)
 
+        let feedbackItem = NSMenuItem(title: "Report issue with last dictation… (F6)", action: #selector(openFeedback), keyEquivalent: "")
+        feedbackItem.target = self
+        menu.addItem(feedbackItem)
+
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
@@ -291,6 +299,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let resolved = SettingsManager.shared.resolveStyle(bundleId: bundleId, windowTitle: title, windowURL: url)
         dictationStyle = resolved.style
+        dictationApp = bundleId
+        dictationRule = resolved.rule
         // Diagnostics only: lengths and whether a configured url term matched.
         // Never the title, the full URL, or arbitrary hosts (that would be a browsing log).
         let urlNote: String
@@ -304,6 +314,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         settingsWindow.show()
+    }
+
+    @objc private func openFeedback() {
+        feedbackWindow.show()
     }
 
     @objc private func toggleListening() {
@@ -354,6 +368,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         keyMonitor.onFnKeyUp = { [weak self] in
             log("F5 pressed — stopping recording")
             self?.handleFnUp()
+        }
+        keyMonitor.onFeedbackKey = { [weak self] in
+            self?.openFeedback()
         }
 
         if keyMonitor.start() {
@@ -427,6 +444,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             _ = try recorder.startRecording()
+            recordingStartedAt = Date()
             log("Recording started")
 
             // Page the model back in while the user is still speaking (local mode only).
@@ -588,6 +606,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let chain = chunkChain.last
         let allChunkTasks = chunkChain
         let style = dictationStyle
+        let app = dictationApp
+        let rule = dictationRule
+        let recordingSec = recordingStartedAt.flatMap { start in processingStartedAt.map { $0.timeIntervalSince(start) } }
+        let procStart = processingStartedAt ?? Date()
 
         processingTask = Task {
             // On failure, keep the recording so the dictation isn't lost — it's the only
@@ -622,6 +644,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 try await withThrowingTaskGroup(of: AICleanupService.CleanupResult.self) { group in
                     group.addTask { [self] in
                         let rawText = try await chain?.value ?? ""
+                        let rawReadyAt = Date()
 
                         guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             log("Empty transcription, skipping")
@@ -632,8 +655,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         await MainActor.run { overlay.show(status: "Cleaning up...") }
                         let result = await cleanup.cleanup(rawText: rawText, style: style)
 
-                        // Save to history (before paste, so it's retrievable even if paste fails)
-                        HistoryManager.shared.addEntry(cleanedText: result.text, rawText: rawText, style: style.rawValue)
+                        // Save to history (before paste, so it's retrievable even if paste fails),
+                        // with the pipeline facts a later F6 note can be read against.
+                        let settings = SettingsManager.shared
+                        let context = settings.speakerContext.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let meta = DictationMeta(
+                            app: app.isEmpty ? nil : app,
+                            rule: rule,
+                            styleOverride: settings.cleanupStyleOverride,
+                            cleanupMode: result.cleanupMode,
+                            model: result.model,
+                            usedLLM: result.usedLLM,
+                            promptChars: result.promptChars,
+                            contextChars: context.count,
+                            contextHash: AppDelegate.shortHash(context),
+                            glossaryTerms: settings.whisperGlossary().terms,
+                            replacementRules: settings.replacements.count,
+                            hesitationNormalized: result.hesitationNormalized,
+                            chunks: allChunkTasks.count,
+                            recordingSec: recordingSec,
+                            whisperWaitSec: rawReadyAt.timeIntervalSince(procStart),
+                            cleanupSec: result.seconds,
+                            totalSec: Date().timeIntervalSince(procStart),
+                            warmUp: whisper.warmUpNote(),
+                            fallbackReason: result.fallbackReason,
+                            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+                        )
+                        HistoryManager.shared.addEntry(cleanedText: result.text, rawText: rawText, style: style.rawValue, meta: meta)
 
                         return result
                     }
@@ -695,5 +743,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private enum ProcessingError: Error {
         case timeout
+    }
+
+    /// Stable FNV-1a fingerprint (Swift's Hasher is seeded per process), so history can tell
+    /// which version of the speaker context a dictation was cleaned with.
+    static func shortHash(_ s: String) -> String {
+        var h: UInt32 = 2_166_136_261
+        for b in s.utf8 { h ^= UInt32(b); h = h &* 16_777_619 }
+        return String(format: "%08x", h)
     }
 }

@@ -36,6 +36,7 @@ swiftc \
     "${SOURCES_DIR}/HistoryManager.swift" \
     "${SOURCES_DIR}/HistorySuggester.swift" \
     "${SOURCES_DIR}/SettingsWindow.swift" \
+    "${SOURCES_DIR}/FeedbackWindow.swift" \
     "${SOURCES_DIR}/WelcomeWindow.swift" \
     "${SOURCES_DIR}/UpdateChecker.swift" \
     "${SOURCES_DIR}/AppDelegate.swift" \

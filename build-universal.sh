@@ -19,7 +19,8 @@ SWIFT_SOURCES=(
     "${SOURCES_DIR}/TextInjector.swift"
     "${SOURCES_DIR}/KeyMonitor.swift"
     "${SOURCES_DIR}/SettingsManager.swift"
-    "${SOURCES_DIR}/SettingsWindow.swift"
+    "${SOURCES_DIR}/SettingsWindow.swift" \
+    "${SOURCES_DIR}/FeedbackWindow.swift"
     "${SOURCES_DIR}/WelcomeWindow.swift"
     "${SOURCES_DIR}/UpdateChecker.swift"
     "${SOURCES_DIR}/AppDelegate.swift"

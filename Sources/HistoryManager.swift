@@ -1,11 +1,48 @@
 import Foundation
 
+/// Per-dictation pipeline facts, recorded so a bad output can be traced to a stage after
+/// the fact (which app, which style and model, what context was in the prompt, how long
+/// each step took). Diagnostics only: never the window title or URL.
+struct DictationMeta: Codable {
+    var app: String?              // frontmost app bundle id at key-down
+    var rule: Int?                // cleanupProfiles rule index that matched, if any
+    var styleOverride: String?    // menu-bar override at the time (auto / verbatim / tidy)
+    var cleanupMode: String?      // off / local / cloud
+    var model: String?            // cleanup model id (nil when cleanup is off)
+    var usedLLM: Bool?            // false when the text was too short for a round trip
+    var promptChars: Int?         // system prompt length incl. speaker context
+    var contextChars: Int?        // speakerContext length
+    var contextHash: String?      // short hash of speakerContext, to tell versions apart
+    var glossaryTerms: Int?       // whisper glossary terms in the prompt
+    var replacementRules: Int?    // find/replace rules active
+    var hesitationNormalized: Int?
+    var chunks: Int?
+    var recordingSec: Double?     // key-down to end of tail
+    var whisperWaitSec: Double?   // end of tail to raw text ready (what the user waits for)
+    var cleanupSec: Double?
+    var totalSec: Double?         // end of tail to paste
+    var warmUp: String?           // outcome of the key-down warm-up ("done 1.2s", "skipped (recent)", "failed", "none")
+    var fallbackReason: String?   // non-nil when cleanup fell back to raw text
+    var appVersion: String?
+}
+
+/// Daniel's own note on a dictation, entered via F6. The correction signal the rest of the
+/// improvement loop (monthly check, harness) learns from.
+struct DictationFeedback: Codable {
+    let timestamp: Date
+    var tags: [String]
+    var note: String
+    var correctedText: String?
+}
+
 struct HistoryEntry: Codable {
     let id: UUID
     let timestamp: Date
     let cleanedText: String
     let rawText: String?
     let style: String?
+    var meta: DictationMeta?
+    var feedback: DictationFeedback?
 }
 
 class HistoryManager {
@@ -31,20 +68,35 @@ class HistoryManager {
         _entries = loadFromDisk()
     }
 
-    func addEntry(cleanedText: String, rawText: String?, style: String? = nil) {
+    @discardableResult
+    func addEntry(cleanedText: String, rawText: String?, style: String? = nil, meta: DictationMeta? = nil) -> UUID {
+        let entry = HistoryEntry(
+            id: UUID(),
+            timestamp: Date(),
+            cleanedText: cleanedText,
+            rawText: rawText,
+            style: style,
+            meta: meta,
+            feedback: nil
+        )
         queue.sync {
-            let entry = HistoryEntry(
-                id: UUID(),
-                timestamp: Date(),
-                cleanedText: cleanedText,
-                rawText: rawText,
-                style: style
-            )
             _entries.insert(entry, at: 0)
             if _entries.count > maxEntries {
                 _entries = Array(_entries.prefix(maxEntries))
             }
             saveToDisk()
+        }
+        return entry.id
+    }
+
+    /// Attaches (or replaces) feedback on an entry. Returns false if the id is unknown.
+    @discardableResult
+    func setFeedback(id: UUID, feedback: DictationFeedback) -> Bool {
+        queue.sync {
+            guard let i = _entries.firstIndex(where: { $0.id == id }) else { return false }
+            _entries[i].feedback = feedback
+            saveToDisk()
+            return true
         }
     }
 

@@ -195,6 +195,13 @@ class AICleanupService {
     struct CleanupResult {
         let text: String
         let fallbackReason: String?
+        // Filled by cleanup() for the history record; the inner paths leave them nil.
+        var cleanupMode: String? = nil
+        var model: String? = nil
+        var usedLLM: Bool? = nil
+        var promptChars: Int? = nil
+        var hesitationNormalized: Int? = nil
+        var seconds: Double? = nil
     }
 
     /// A dead API key produced weeks of silently un-cleaned dictation because every failure
@@ -225,7 +232,28 @@ class AICleanupService {
         return "cleanup failed"
     }
 
+    /// Runs the pipeline and annotates the result with what ran (mode, model, prompt size,
+    /// timing) so the history entry can say which configuration produced a given output.
     func cleanup(rawText: String, style: CleanupStyle = .verbatim) async -> CleanupResult {
+        let started = Date()
+        var result = await runCleanup(rawText: rawText, style: style)
+        result.seconds = Date().timeIntervalSince(started)
+        let normalized = Self.normalizeHesitation(rawText)
+        result.hesitationNormalized = normalized.count
+        let mode = Config.cleanupMode
+        result.cleanupMode = "\(mode)"
+        let replaced = SettingsManager.shared.applyReplacements(normalized.text)
+        result.usedLLM = mode != .off && replaced.count >= 30
+        switch mode {
+        case .off: result.model = nil
+        case .local: result.model = Config.localLLMModel
+        case .cloud: result.model = Config.gptModel
+        }
+        result.promptChars = mode == .off ? nil : prompt(for: style).count
+        return result
+    }
+
+    private func runCleanup(rawText: String, style: CleanupStyle) async -> CleanupResult {
         // Hesitation "..." → ordinary punctuation, then find/replace, then the LLM
         let normalized = Self.normalizeHesitation(rawText)
         if normalized.count > 0 { log("Normalized \(normalized.count) hesitation ellipses") }
