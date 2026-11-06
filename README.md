@@ -126,6 +126,8 @@ monthly health check; most are "skip" or "port", not "adopt".
 
 **Text doesn't paste** — Accessibility permission, and a focused text field.
 
+**⌘V / ⌘C / ⌘A do nothing in Settings or the feedback window** — fixed 2026-11-06 by giving the menu-bar app an Edit menu (`main.swift`); if it recurs, that menu is missing.
+
 **Build fails** — Xcode Command Line Tools; the `CustomWispr Dev` certificate must be in the login keychain or the script falls back to ad-hoc signing (and Accessibility will have to be re-granted).
 
 ## Contributing
