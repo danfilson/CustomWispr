@@ -202,7 +202,14 @@ class AICleanupService {
         var promptChars: Int? = nil
         var hesitationNormalized: Int? = nil
         var seconds: Double? = nil
+        var cachedTokens: Int? = nil      // prompt tokens served from Anthropic's cache
+        var cacheWriteTokens: Int? = nil  // prompt tokens written to the cache (2x price, 1h TTL)
+        var costUSD: Double? = nil        // as reported by OpenRouter
     }
+
+    /// Usage of the most recent cloud call, for the history record. One dictation is
+    /// processed at a time, so a plain property is enough.
+    private var lastCloudUsage: (cached: Int, written: Int, cost: Double)?
 
     /// A dead API key produced weeks of silently un-cleaned dictation because every failure
     /// path here returned the raw text and said nothing. Reasons are short enough to read in
@@ -236,8 +243,14 @@ class AICleanupService {
     /// timing) so the history entry can say which configuration produced a given output.
     func cleanup(rawText: String, style: CleanupStyle = .verbatim) async -> CleanupResult {
         let started = Date()
+        lastCloudUsage = nil
         var result = await runCleanup(rawText: rawText, style: style)
         result.seconds = Date().timeIntervalSince(started)
+        if let u = lastCloudUsage {
+            result.cachedTokens = u.cached
+            result.cacheWriteTokens = u.written
+            result.costUSD = u.cost
+        }
         let normalized = Self.normalizeHesitation(rawText)
         result.hesitationNormalized = normalized.count
         let mode = Config.cleanupMode
@@ -365,12 +378,22 @@ class AICleanupService {
         request.setValue("Bearer \(Config.apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
+        // Prompt caching (Anthropic via OpenRouter, added 2026-11-06): the system prompt is
+        // ~1,500 tokens and identical on every call, so it is marked as a cache block with a
+        // 1-hour TTL. 97% of dictations come within an hour of the previous one; a cache read
+        // costs 0.1x, a write 2x, so this cuts prompt cost by roughly 85%. Other providers
+        // ignore the block form or do their own implicit caching, so only Anthropic gets it.
+        let model = Config.gptModel
+        let systemText = prompt(for: style)
+        let systemContent: Any = model.hasPrefix("anthropic/")
+            ? [["type": "text", "text": systemText, "cache_control": ["type": "ephemeral", "ttl": "1h"]]]
+            : systemText
         let payload: [String: Any] = [
-            "model": Config.gptModel,
+            "model": model,
             "temperature": 0.1,
             "max_tokens": 2048,
             "messages": [
-                ["role": "system", "content": prompt(for: style)],
+                ["role": "system", "content": systemContent],
                 ["role": "user", "content": "<transcription>\n\(rawText)\n</transcription>"]
             ]
         ]
@@ -392,6 +415,17 @@ class AICleanupService {
               let message = choices.first?["message"] as? [String: Any],
               let content = message["content"] as? String else {
             throw CleanupError.parseError
+        }
+
+        if let usage = json?["usage"] as? [String: Any] {
+            let details = usage["prompt_tokens_details"] as? [String: Any]
+            let cached = details?["cached_tokens"] as? Int ?? 0
+            let written = details?["cache_write_tokens"] as? Int ?? 0
+            let cost = usage["cost"] as? Double ?? 0
+            let pin = usage["prompt_tokens"] as? Int ?? 0
+            let pout = usage["completion_tokens"] as? Int ?? 0
+            lastCloudUsage = (cached, written, cost)
+            log(String(format: "Cleanup usage: %d in (%d cached, %d written), %d out, $%.4f", pin, cached, written, pout, cost))
         }
 
         return content.trimmingCharacters(in: .whitespacesAndNewlines)

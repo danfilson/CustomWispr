@@ -165,6 +165,7 @@ final class FeedbackWindow: NSObject, NSWindowDelegate {
                 bits.append(String(format: "(whisper %.1fs, cleanup %.1fs)", w, c))
             }
             if let wu = m.warmUp { bits.append("warm-up \(wu)") }
+            if let c = m.costUSD { bits.append(String(format: "$%.4f%@", c, (m.cachedTokens ?? 0) > 0 ? " cached" : "")) }
             if let f = m.fallbackReason { bits.append("⚠ \(f)") }
         } else {
             bits.append("no pipeline metadata (recorded before 2026-11-06)")

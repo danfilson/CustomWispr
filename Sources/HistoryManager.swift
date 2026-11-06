@@ -24,6 +24,9 @@ struct DictationMeta: Codable {
     var warmUp: String?           // outcome of the key-down warm-up ("done 1.2s", "skipped (recent)", "failed", "none")
     var fallbackReason: String?   // non-nil when cleanup fell back to raw text
     var appVersion: String?
+    var cachedTokens: Int?        // prompt tokens served from the provider's cache (since 2026-11-06)
+    var cacheWriteTokens: Int?
+    var costUSD: Double?          // this call's cost as reported by OpenRouter
 }
 
 /// Daniel's own note on a dictation, entered via F6. The correction signal the rest of the

@@ -18,3 +18,4 @@ Columns: Date · Change · Metric to watch (how it is measured) · Baseline (bef
 | 2026-11-05 | Speaker context incl. speaking-style profile (903 chars) | Judge voice + completeness, with vs without context | Harness A/B a wash overall; passage 29 completeness +3, voice +4 | |
 | 2026-11-05 | Tidy is the default style for every app | F6 `dropped-content` / `over-cleaned` flags per 100 dictations in the first month; tidy share of dictations | Tidy was email-only; ~0 % of dictations | |
 | 2026-11-06 | F6 feedback window + per-dictation `meta` in history | Flags per 100 dictations (any tag); share of entries with `meta` | 0 flagged entries; no entry has `meta` before 2026-11-06 14:51 | |
+| 2026-11-06 | Anthropic prompt caching (system prompt as a cache block, 1 h TTL) | Cache hit share of `meta.cachedTokens`; mean `meta.costUSD` per dictation | Uncached: 1,527 prompt tokens, ≈$0.0045 per dictation, ≈$6/month at 61/day; verified hit = $0.0003 for the prompt | |

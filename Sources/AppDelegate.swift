@@ -677,7 +677,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                             totalSec: Date().timeIntervalSince(procStart),
                             warmUp: whisper.warmUpNote(),
                             fallbackReason: result.fallbackReason,
-                            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+                            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+                            cachedTokens: result.cachedTokens,
+                            cacheWriteTokens: result.cacheWriteTokens,
+                            costUSD: result.costUSD
                         )
                         HistoryManager.shared.addEntry(cleanedText: result.text, rawText: rawText, style: style.rawValue, meta: meta)
 

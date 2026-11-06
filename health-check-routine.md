@@ -61,7 +61,7 @@ for what the routine does; edit here, not in the scheduled-task prompt.
 - **Key expiry — escalate, don't just note it.** Read `expires_at` from that response and report days remaining.
   - **< 60 days ⇒ 🔴 action needed** and it leads the Actions table. A dead key is the single highest-consequence failure this app has (see the canary in §3); an expiry date is the one form of it that is knowable in advance, so it must never be reported as a passive observation. Current key expires **2027-01-12** (re-minted 2026-10-13).
   - Also `GET /api/v1/credits` for the account balance — flag under $5, since an exhausted balance fails identically to a dead key.
-- Cross-estimate: last month's history volume × current cleanup model pricing (input ≈ raw chars/4 tokens + ~900-token system prompt (verbatim) or ~1,050 (tidy), both including the ~230-token speaker context, per call; output ≈ cleaned chars/4).
+- **Exact spend from history (since 2026-11-06):** sum `meta.costUSD` over the month's entries; report cache hit rate (`meta.cachedTokens > 0` share) and the cost per dictation with and without a cache hit. Prompt caching (Anthropic, 1 h TTL) was enabled 2026-11-06; a hit rate under 85 % or a write share over 15 % means dictations are spaced out more than expected and the TTL choice should be revisited. Fallback cross-estimate for older entries: raw chars/4 + ~1,530-token tidy system prompt (measured 2026-11-06 incl. the speaker context) per call; output ≈ cleaned chars/4.
 - Report monthly spend and $/dictation.
 
 ### 5. Cleanup model A/B (synthetic set only)
