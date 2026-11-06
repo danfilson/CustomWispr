@@ -10,11 +10,17 @@ class KeyMonitor {
 
     private var hotKeyRef: EventHotKeyRef?
     private var feedbackHotKeyRef: EventHotKeyRef?
+    private var altHotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
 
     // F5 = kVK_F5 = 0x60 = 96; F6 = kVK_F6 = 0x61
     private static let hotKeyCode: UInt32 = 0x60
     private static let feedbackKeyCode: UInt32 = 0x61
+    // ⌘⌥Space: second record toggle for the built-in MacBook keyboard, where the top row
+    // sends media functions and fn+F5 does not reach us. Needs "Show Finder search window"
+    // (System Settings → Keyboard → Keyboard Shortcuts → Spotlight) unticked, or macOS eats it.
+    private static let altKeyCode: UInt32 = 0x31   // kVK_Space
+    private static let altModifiers: UInt32 = UInt32(cmdKey | optionKey)
     private static let hotKeySignature: FourCharCode = 0x43575052 // 'CWPR'
 
     func start() -> Bool {
@@ -35,7 +41,7 @@ class KeyMonitor {
             if status == noErr, pressed.id == 2 {
                 monitor.handleFeedbackKeyPress()
             } else {
-                monitor.handleHotKeyPress()
+                monitor.handleHotKeyPress(via: status == noErr && pressed.id == 3 ? "⌘⌥Space" : "F5")
             }
             return noErr
         }
@@ -80,6 +86,16 @@ class KeyMonitor {
             } else {
                 log("WARNING: Failed to register F6 feedback hot key: \(fbStatus) (menu item still works)")
             }
+            var altID = EventHotKeyID()
+            altID.signature = KeyMonitor.hotKeySignature
+            altID.id = 3
+            let altStatus = RegisterEventHotKey(KeyMonitor.altKeyCode, KeyMonitor.altModifiers, altID,
+                                                GetApplicationEventTarget(), 0, &altHotKeyRef)
+            if altStatus == noErr {
+                log("Alternate record hot key registered (⌘⌥Space)")
+            } else {
+                log("WARNING: Failed to register ⌘⌥Space hot key: \(altStatus)")
+            }
             return true
         } else {
             log("ERROR: Failed to register hot key: \(registerStatus)")
@@ -90,13 +106,13 @@ class KeyMonitor {
         }
     }
 
-    private func handleHotKeyPress() {
+    private func handleHotKeyPress(via key: String) {
         isRecordingToggle.toggle()
         if isRecordingToggle {
-            log("F5 pressed — starting recording")
+            log("\(key) pressed — starting recording")
             DispatchQueue.main.async { [weak self] in self?.onFnKeyDown?() }
         } else {
-            log("F5 pressed — stopping recording")
+            log("\(key) pressed — stopping recording")
             DispatchQueue.main.async { [weak self] in self?.onFnKeyUp?() }
         }
     }
@@ -107,6 +123,10 @@ class KeyMonitor {
     }
 
     func stop() {
+        if let ref = altHotKeyRef {
+            UnregisterEventHotKey(ref)
+            altHotKeyRef = nil
+        }
         if let ref = feedbackHotKeyRef {
             UnregisterEventHotKey(ref)
             feedbackHotKeyRef = nil

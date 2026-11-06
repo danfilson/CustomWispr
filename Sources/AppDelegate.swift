@@ -362,11 +362,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startKeyMonitor() {
         keyMonitor.onFnKeyDown = { [weak self] in
-            log("F5 pressed — starting recording")
             self?.handleFnDown()
         }
         keyMonitor.onFnKeyUp = { [weak self] in
-            log("F5 pressed — stopping recording")
             self?.handleFnUp()
         }
         keyMonitor.onFeedbackKey = { [weak self] in

@@ -10,7 +10,7 @@ whisper.cpp server, cleaned up by an LLM, and pasted into the focused text field
 
 ## Features
 
-- **Global F5 hotkey** via Carbon `RegisterEventHotKey` (works on macOS 26 Tahoe); menu-bar toggle as a fallback
+- **Global F5 hotkey** via Carbon `RegisterEventHotKey` (works on macOS 26 Tahoe), plus **⌘⌥Space** for the built-in MacBook keyboard whose top row sends media functions; menu-bar toggle as a fallback
 - **Local transcription** with whisper.cpp (`ggml-large-v3-turbo`, Metal, Silero VAD) — nothing leaves the machine until cleanup
 - **Streaming chunks**: long dictations are cut at pauses and transcribed while you are still talking, with prompt chaining and seam de-duplication, so only the last few seconds remain after key-up
 - **Whisper glossary**: your `vocabulary` terms are passed as the whisper prompt on every chunk so names and jargon come out spelled right
@@ -69,7 +69,7 @@ whisper-server log `/tmp/whisper-server.log`.
 
 ## Usage
 
-1. Press **F5**, talk, press **F5** again. The overlay shows Listening → Transcribing → Cleaning up, then the text is pasted.
+1. Press **F5** (or **⌘⌥Space**), talk, press it again. The overlay shows Listening → Transcribing → Cleaning up, then the text is pasted.
 2. **Cleanup style** in the menu bar switches between Auto (rules + default), Verbatim and Tidy.
 3. **F6** (or menu bar → *Report issue with last dictation…*) opens the feedback window: pick the dictation, tick what went wrong, add notes, optionally paste the corrected text. ⌘↩ saves. Nothing leaves the machine; the log records only tags and lengths.
 4. **Settings** holds find/replace rules (with *Suggest from History*), the mic picker and the cleanup-model catalog.
@@ -93,7 +93,7 @@ changes is manual on purpose.
 | `main.swift` | App entry point |
 | `AppDelegate.swift` | Pipeline orchestration: hotkeys, style resolution, recording, chunk chain, cleanup, history, paste |
 | `Config.swift` | Reads `~/.custom-wispr.env`: modes, model, endpoints |
-| `KeyMonitor.swift` | F5 record and F6 feedback hotkeys (Carbon) |
+| `KeyMonitor.swift` | F5 / ⌘⌥Space record and F6 feedback hotkeys (Carbon) |
 | `AudioRecorder.swift` | AVAudioEngine capture, pre-warm, pause-based chunk rotation |
 | `WhisperService.swift` | whisper.cpp server client with glossary prompt and key-down warm-up (or OpenAI Whisper in cloud mode) |
 | `AICleanupService.swift` | Verbatim and tidy prompts, speaker context, hesitation normalizer, refusal/rewrite guards, result metadata |
@@ -115,6 +115,8 @@ cleanup through OpenRouter with a configurable model. Upstream releases are revi
 monthly health check; most are "skip" or "port", not "adopt".
 
 ## Troubleshooting
+
+**⌘⌥Space opens a Finder search window as well** — untick System Settings → Keyboard → Keyboard Shortcuts → Spotlight → "Show Finder search window"; macOS delivers that shortcut to both.
 
 **F5 does nothing** — check the log for `Key monitor started successfully`; if two instances are running, quit both and relaunch. Make sure Accessibility is granted.
 
