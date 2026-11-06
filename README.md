@@ -85,6 +85,7 @@ changes is manual on purpose.
 - `health-check-routine.md` — the monthly procedure, run by a local Claude Code scheduled task
 - `test-assets/ab_harness.py` — cleanup A/B harness (`--mode verbatim|tidy`, `--list-flagged`, `--promote all`); the synthetic set is `test-assets/cleanup-ab-set.json`, real passages live in `test-assets/cleanup-ab-real.json` (git-ignored, Anthropic models only, enforced in code)
 - `TUNING-LOG.md` — change ↔ metric ↔ baseline ↔ follow-up
+- `test-assets/ios-tidy-shortcut.unsigned.shortcut` — iPhone "Tidy" Shortcut (Apple dictation → same tidy prompt via OpenRouter → clipboard). Regenerate when the tidy prompt or speaker context changes; sign with `shortcuts sign --mode anyone`; the key is pasted into the first Text action on the phone, never stored in the file.
 
 ## Architecture
 
