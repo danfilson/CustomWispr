@@ -1,161 +1,136 @@
 # CustomWispr
 
-A customizable, open-source speech-to-text app for macOS.
+A customizable, open-source speech-to-text app for macOS. This is Daniel Filson's fork of
+[beausterling/CustomWispr](https://github.com/beausterling/CustomWispr); it has diverged a
+long way from upstream (see **Fork differences** below) and tracks its own history in
+`SESSION-HANDOFF.md`, `TUNING-LOG.md` and an Obsidian note.
 
-Hold the **fn** key to record your speech, release to transcribe it with OpenAI's Whisper API, clean it up with GPT, and paste the result directly into any active text field.
+Press **F5** to start recording, press it again to stop. Audio is transcribed by a local
+whisper.cpp server, cleaned up by an LLM, and pasted into the focused text field.
 
 ## Features
 
-- **Global fn key trigger** — works in any app, no menubar interaction needed
-- **Floating overlay UI** — shows recording/processing status as a compact overlay
-- **AI-powered cleanup** — removes filler words (uh, um) and fixes grammar while preserving your natural voice
-- **Clipboard-safe paste** — saves and restores your clipboard contents after injecting text
-- **Find & Replace** — fix words that are consistently mistranscribed (e.g. Whisper hears "custom whisper" → you want "CustomWispr")
-- **Menu bar controls** — settings and quit from the menu bar icon
-- **Lightweight** — pure Swift, no Electron, no dependencies beyond macOS system frameworks
+- **Global F5 hotkey** via Carbon `RegisterEventHotKey` (works on macOS 26 Tahoe); menu-bar toggle as a fallback
+- **Local transcription** with whisper.cpp (`ggml-large-v3-turbo`, Metal, Silero VAD) — nothing leaves the machine until cleanup
+- **Streaming chunks**: long dictations are cut at pauses and transcribed while you are still talking, with prompt chaining and seam de-duplication, so only the last few seconds remain after key-up
+- **Whisper glossary**: your `vocabulary` terms are passed as the whisper prompt on every chunk so names and jargon come out spelled right
+- **Key-down warm-up**: a short clip pages the model back into RAM while you speak, so the first dictation after an idle hour is no slower than the rest
+- **Two cleanup styles**: *tidy* (default — removes fillers, false starts and retractions, resolves self-corrections, keeps every fact and your voice) and *verbatim* (fillers only). Per-app rules in `cleanupProfiles`, a menu-bar override, and a speaker-context block so the model understands your references
+- **Hesitation-ellipsis normalization** before cleanup, find/replace rules after
+- **F6 feedback window**: tag and annotate any of the last 8 dictations, optionally with the text you actually wanted. This is the correction signal the monthly health check and the A/B harness learn from
+- **History with pipeline metadata**: every entry records the app, style, model, prompt and context size, chunk count, per-stage timings, warm-up outcome and any fallback, so a bad output can be traced to a stage
+- **Floating overlay** for status, **clipboard-safe paste**, **menu-bar controls**, pure Swift with no dependencies beyond system frameworks
 
 ## Requirements
 
-- macOS 13.0 (Ventura) or later
+- macOS 13.0 or later (Apple Silicon build is the one in use; `build.sh` targets Intel)
 - Xcode Command Line Tools (`xcode-select --install`)
-- OpenAI API key
-- Microphone permission
-- Accessibility permission (for simulating Cmd+V paste)
+- whisper.cpp `whisper-server` (Homebrew) with a model in `~/.local/share/whisper-models/`, run by launchd (`~/Library/LaunchAgents/com.personal.whisper-server.plist`, port 8090)
+- An OpenRouter key (or any OpenAI-compatible endpoint) for cleanup; cleanup can also run locally via Ollama or be switched off
+- Microphone and Accessibility permissions
 
-## Installation
-
-### Intel Mac
+## Build and deploy
 
 ```bash
-chmod +x build.sh
-./build.sh
+cd ~/Projects/BW/customwispr
+bash build-arm64.sh      # compile, copy resources, sign as "CustomWispr Dev", deploy to /Applications, relaunch
 ```
 
-### Apple Silicon Mac (M1/M2/M3/M4)
+The stable `CustomWispr Dev` signing certificate means Accessibility permission survives
+rebuilds. Never run `tccutil reset` for this app. A rebuild stalls whisper for 30–50 s, so
+do not dictate while one is running.
 
-```bash
-chmod +x build-arm64.sh
-./build-arm64.sh
+## Configuration
+
+`~/.custom-wispr.env` (mode 600):
+
+```
+OPENAI_API_KEY=<OpenRouter key>
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+CLEANUP_MODE=cloud            # cloud | local | off
+CLEANUP_MODEL=anthropic/claude-sonnet-5.5
+LOCAL_WHISPER_URL=http://127.0.0.1:8090
 ```
 
-Then move the app to your Applications folder:
+`~/.custom-wispr-settings.json` (mode 600, edited through Settings or by hand):
 
-```bash
-cp -r CustomWispr.app /Applications/
-```
+| Key | What it holds |
+|---|---|
+| `replacements` | find/replace rules, applied after hesitation normalization and before the LLM |
+| `vocabulary` | whisper glossary terms (names, products, jargon) |
+| `cleanupProfiles` | `default` style plus `rules[{style, bundleIds, titleContains, urlContains}]` |
+| `cleanupStyleOverride` | `auto` / `verbatim` / `tidy` — the menu-bar override |
+| `speakerContext` | who the speaker is and how they speak; appended to the cleanup prompt inside `<context>` |
+| `selectedMicUID` | input device |
 
-## Setup
-
-### 1. Add your OpenAI API key
-
-Create the config file:
-
-```bash
-echo "OPENAI_API_KEY=your-key-here" > ~/.custom-wispr.env
-chmod 600 ~/.custom-wispr.env
-```
-
-### 2. Configure the fn key
-
-Go to **System Settings > Keyboard** and set **"Press fn key to"** to **"Do Nothing"**. This allows CustomWispr to capture the fn key as a trigger.
-
-### 3. Grant permissions
-
-On first launch, macOS will prompt you to grant:
-
-- **Accessibility** — needed to simulate Cmd+V for pasting transcribed text
-- **Microphone** — needed to record your speech
-
-If you miss the prompts, go to **System Settings > Privacy & Security** and enable CustomWispr under Accessibility and Microphone.
+Other files: history `~/.custom-wispr-history.json` (2000 entries; entries carry `style`,
+`meta`, and `feedback` when you pressed F6), log `~/Library/Logs/CustomWispr.log`,
+whisper-server log `/tmp/whisper-server.log`.
 
 ## Usage
 
-1. Launch `CustomWispr.app`
-2. **Hold fn** — a floating overlay appears and recording begins
-3. **Release fn** — recording stops, audio is sent to Whisper for transcription, then cleaned up by GPT
-4. The cleaned text is pasted into whatever text field is currently focused
+1. Press **F5**, talk, press **F5** again. The overlay shows Listening → Transcribing → Cleaning up, then the text is pasted.
+2. **Cleanup style** in the menu bar switches between Auto (rules + default), Verbatim and Tidy.
+3. **F6** (or menu bar → *Report issue with last dictation…*) opens the feedback window: pick the dictation, tick what went wrong, add notes, optionally paste the corrected text. ⌘↩ saves. Nothing leaves the machine; the log records only tags and lengths.
+4. **Settings** holds find/replace rules (with *Suggest from History*), the mic picker and the cleanup-model catalog.
 
-### Find & Replace
+## Improvement loop
 
-Open **Settings** from the menu bar icon to add find-and-replace rules. These fix words that Whisper consistently gets wrong — for example, proper nouns, brand names, or technical jargon.
+The app does not tune itself. The loop is: F6 flags (your ground truth) → monthly health
+check reads them first, diagnoses the stage, proposes glossary / rule / prompt changes, and
+promotes flagged dictations into a git-ignored real test set → `TUNING-LOG.md` records every
+applied change with its baseline, and the next check fills in the follow-up. Applying
+changes is manual on purpose.
 
-Each rule has two columns:
-
-| Find | Replace With |
-|---|---|
-| custom whisper | CustomWispr |
-| react native | React Native |
-
-Replacements are case-insensitive and run **after** GPT cleanup, so they're deterministic — if the word appears in the output, it gets replaced every time. Click **+** to add a row, **−** to remove one, and **Save** to apply.
-
-Rules are stored in `~/.custom-wispr-settings.json` (permissions `0600`).
-
-## AI Model
-
-CustomWispr uses **OpenAI `gpt-4o-mini`** for text cleanup and **`whisper-1`** for speech-to-text transcription. These are configured in `Sources/Config.swift`.
-
-### Changing the model
-
-If you want to switch to a different model (e.g. `gpt-4o`, `gpt-4-turbo`), copy the section below and give it to your coding assistant:
-
-> **Instructions for bot:** In the file `Sources/Config.swift`, change the value of `gptModel` on line 5 to the desired model name. For example, to use `gpt-4o`, change:
-> ```swift
-> static let gptModel = "gpt-4o-mini"
-> ```
-> to:
-> ```swift
-> static let gptModel = "gpt-4o"
-> ```
-> Then rebuild the app by running `./build-arm64.sh` (Apple Silicon) or `./build.sh` (Intel).
+- `health-check-routine.md` — the monthly procedure, run by a local Claude Code scheduled task
+- `test-assets/ab_harness.py` — cleanup A/B harness (`--mode verbatim|tidy`, `--list-flagged`, `--promote all`); the synthetic set is `test-assets/cleanup-ab-set.json`, real passages live in `test-assets/cleanup-ab-real.json` (git-ignored, Anthropic models only, enforced in code)
+- `TUNING-LOG.md` — change ↔ metric ↔ baseline ↔ follow-up
 
 ## Architecture
 
 | File | Purpose |
 |---|---|
 | `main.swift` | App entry point |
-| `AppDelegate.swift` | Orchestrates the full pipeline: key events, recording, transcription, cleanup, and injection |
-| `Config.swift` | Loads OpenAI API key from `~/.custom-wispr.env` or environment variables |
-| `KeyMonitor.swift` | Global fn key listener using a CGEvent tap |
-| `AudioRecorder.swift` | Records microphone input to a temporary audio file using AVAudioEngine |
-| `WhisperService.swift` | Sends audio to the OpenAI Whisper API for transcription |
-| `AICleanupService.swift` | Sends raw transcription to GPT for light cleanup, then applies find-and-replace rules |
-| `SettingsManager.swift` | Loads and saves find-and-replace rules to `~/.custom-wispr-settings.json` |
-| `SettingsWindow.swift` | Native macOS settings window with a find-and-replace table |
-| `TextInjector.swift` | Pastes text into the active field via clipboard + Cmd+V, then restores the original clipboard |
-| `OverlayWindow.swift` | Floating status overlay that shows recording/processing state |
+| `AppDelegate.swift` | Pipeline orchestration: hotkeys, style resolution, recording, chunk chain, cleanup, history, paste |
+| `Config.swift` | Reads `~/.custom-wispr.env`: modes, model, endpoints |
+| `KeyMonitor.swift` | F5 record and F6 feedback hotkeys (Carbon) |
+| `AudioRecorder.swift` | AVAudioEngine capture, pre-warm, pause-based chunk rotation |
+| `WhisperService.swift` | whisper.cpp server client with glossary prompt and key-down warm-up (or OpenAI Whisper in cloud mode) |
+| `AICleanupService.swift` | Verbatim and tidy prompts, speaker context, hesitation normalizer, refusal/rewrite guards, result metadata |
+| `SettingsManager.swift` | Settings file: replacements, vocabulary, profiles, override, speaker context |
+| `SettingsWindow.swift` | Settings UI and the cleanup-model catalog |
+| `FeedbackWindow.swift` | F6 feedback window |
+| `HistoryManager.swift` | History entries with `meta` and `feedback` |
+| `HistorySuggester.swift` | "Suggest from History" find/replace candidates |
+| `TextInjector.swift` | Paste via CGEvent Cmd+V with AppleScript fallback |
+| `OverlayWindow.swift` | Floating status overlay |
+| `WelcomeWindow.swift`, `UpdateChecker.swift` | Onboarding; update check is disabled in this fork |
+
+## Fork differences from upstream
+
+Upstream v1.6.0 is the last release reviewed. This fork adds everything under **Features**
+above except the overlay and clipboard handling, replaces the fn-key CGEvent tap with a
+Carbon hotkey, uses a local whisper.cpp server instead of the OpenAI Whisper API, and routes
+cleanup through OpenRouter with a configurable model. Upstream releases are reviewed by the
+monthly health check; most are "skip" or "port", not "adopt".
 
 ## Troubleshooting
 
-**fn key doesn't trigger recording**
-- Make sure **System Settings > Keyboard > "Press fn key to"** is set to **"Do Nothing"**
-- Make sure Accessibility permission is granted for CustomWispr
+**F5 does nothing** — check the log for `Key monitor started successfully`; if two instances are running, quit both and relaunch. Make sure Accessibility is granted.
 
-**No transcription / empty result**
-- Check that your API key is valid in `~/.custom-wispr.env`
-- Check the console output: run the app from Terminal with `./CustomWispr.app/Contents/MacOS/CustomWispr` to see logs
+**First dictation after a long idle is slow** — the warm-up should cover it (`Whisper warm-up done in …` in the log). If every dictation is slow, check whether a build or another heavy job is running; whisper shares the GPU.
 
-**Text doesn't paste**
-- Ensure Accessibility permission is granted — the app needs it to simulate Cmd+V
-- Make sure a text field is focused when you release the fn key
+**Pasted text is raw / overlay shows ⚠** — cleanup fell back; the reason is in the overlay and the log (`API key rejected`, `out of credit`, `rate limited`, `cleanup timed out`). Check the key in `~/.custom-wispr.env` and the OpenRouter balance.
 
-**"Microphone access denied" error**
-- Go to **System Settings > Privacy & Security > Microphone** and enable CustomWispr
+**Names come out wrong** — add them to `vocabulary` (whisper glossary) or as a find/replace rule, and press F6 so the monthly check sees it.
 
-**macOS says the app is "damaged" or "can't be opened"**
-- This happens because the app is not signed with an Apple Developer certificate. It's safe to run — you built it yourself from source.
-- Run this command to clear the Gatekeeper quarantine flag:
-  ```bash
-  xattr -cr CustomWispr.app
-  ```
-- Then open the app again. If macOS still blocks it, go to **System Settings > Privacy & Security**, scroll down, and click **"Open Anyway"** next to the CustomWispr message.
+**Text doesn't paste** — Accessibility permission, and a focused text field.
 
-**Build fails**
-- Ensure Xcode Command Line Tools are installed: `xcode-select --install`
-- Make sure you're using the correct build script for your Mac architecture
+**Build fails** — Xcode Command Line Tools; the `CustomWispr Dev` certificate must be in the login keychain or the script falls back to ad-hoc signing (and Accessibility will have to be re-granted).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to report bugs, suggest features, or submit pull requests.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Note that this fork is tuned for one user; upstream is the place for general features.
 
 ## License
 
