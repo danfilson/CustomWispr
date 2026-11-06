@@ -16,10 +16,11 @@ class KeyMonitor {
     // F5 = kVK_F5 = 0x60 = 96; F6 = kVK_F6 = 0x61
     private static let hotKeyCode: UInt32 = 0x60
     private static let feedbackKeyCode: UInt32 = 0x61
-    // ⌘⌥Space: second record toggle for the built-in MacBook keyboard, where the top row
-    // sends media functions and fn+F5 does not reach us. Needs "Show Finder search window"
-    // (System Settings → Keyboard → Keyboard Shortcuts → Spotlight) unticked, or macOS eats it.
-    private static let altKeyCode: UInt32 = 0x31   // kVK_Space
+    // ⌘⌥M: second record toggle for the built-in MacBook keyboard, where the top row
+    // sends media functions and fn+F5 does not reach us. (⌘⌥Space was tried first and
+    // collides with Finder's search-window shortcut, which Daniel keeps.) A Carbon hot key
+    // consumes the event, so the front app's "Minimize All" (⌘⌥M) no longer fires — fine.
+    private static let altKeyCode: UInt32 = 0x2E   // kVK_ANSI_M
     private static let altModifiers: UInt32 = UInt32(cmdKey | optionKey)
     private static let hotKeySignature: FourCharCode = 0x43575052 // 'CWPR'
 
@@ -41,7 +42,7 @@ class KeyMonitor {
             if status == noErr, pressed.id == 2 {
                 monitor.handleFeedbackKeyPress()
             } else {
-                monitor.handleHotKeyPress(via: status == noErr && pressed.id == 3 ? "⌘⌥Space" : "F5")
+                monitor.handleHotKeyPress(via: status == noErr && pressed.id == 3 ? "⌘⌥M" : "F5")
             }
             return noErr
         }
@@ -92,9 +93,9 @@ class KeyMonitor {
             let altStatus = RegisterEventHotKey(KeyMonitor.altKeyCode, KeyMonitor.altModifiers, altID,
                                                 GetApplicationEventTarget(), 0, &altHotKeyRef)
             if altStatus == noErr {
-                log("Alternate record hot key registered (⌘⌥Space)")
+                log("Alternate record hot key registered (⌘⌥M)")
             } else {
-                log("WARNING: Failed to register ⌘⌥Space hot key: \(altStatus)")
+                log("WARNING: Failed to register ⌘⌥M hot key: \(altStatus)")
             }
             return true
         } else {
